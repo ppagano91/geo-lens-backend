@@ -5,7 +5,7 @@ API con FastAPI para GeoChange Analyzer.
 ## Requisitos
 
 - Python 3.11+
-- Docker (para PostgreSQL + PostGIS en desarrollo local)
+- PostgreSQL 16+ con extensión PostGIS instalados localmente en Windows
 
 ## Instalación
 
@@ -17,15 +17,40 @@ pip install -r requirements-dev.txt
 copy .env.example .env
 ```
 
-## Base de datos (PostgreSQL + PostGIS)
+## Base de datos (PostgreSQL + PostGIS local)
 
-Desde la raíz del proyecto:
+### 1. Verificar PostgreSQL
 
 ```powershell
-docker compose up -d
+pg_isready -h localhost -p 5432
 ```
 
-Aplicar migraciones:
+### 2. Crear base `geochange` (si no existe)
+
+```powershell
+psql -U postgres -c "CREATE USER geochange WITH PASSWORD 'geochange';"
+psql -U postgres -c "CREATE DATABASE geochange OWNER geochange;"
+```
+
+Omita los comandos que fallen porque el usuario o la base ya existen.
+
+### 3. Habilitar PostGIS
+
+```powershell
+psql -U postgres -d geochange -c "CREATE EXTENSION IF NOT EXISTS postgis;"
+```
+
+### 4. Configurar `.env`
+
+Ajuste `DATABASE_URL` en `backend/.env` según sus credenciales locales:
+
+```env
+DATABASE_URL=postgresql+psycopg://geochange:geochange@localhost:5432/geochange
+APP_ENV=local
+CORS_ORIGINS=http://localhost:5173
+```
+
+### 5. Aplicar migraciones
 
 ```powershell
 cd backend
@@ -34,6 +59,16 @@ alembic upgrade head
 ```
 
 Ver detalle en [docs/aoi_persistence.md](../docs/aoi_persistence.md).
+
+### Alternativa: Docker
+
+Desde la raíz del proyecto, si prefiere un contenedor en lugar de PostgreSQL local:
+
+```powershell
+docker compose up -d
+```
+
+Use las mismas credenciales en `DATABASE_URL` (`geochange:geochange@localhost:5432/geochange`).
 
 ## Ejecutar
 
@@ -63,6 +98,6 @@ Los tests de integración de AOIs requieren PostgreSQL levantado y migraciones a
 
 | Variable | Descripción |
 |---|---|
-| `DATABASE_URL` | Conexión SQLAlchemy (`postgresql+psycopg://...`) |
+| `DATABASE_URL` | Conexión SQLAlchemy (`postgresql+psycopg://usuario:password@localhost:5432/geochange`) |
 | `APP_ENV` | Entorno de ejecución (`local`) |
 | `CORS_ORIGINS` | Orígenes permitidos para CORS (ej. `http://localhost:5173`) |
