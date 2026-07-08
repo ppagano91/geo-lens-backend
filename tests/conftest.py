@@ -38,7 +38,7 @@ DATABASE_AVAILABLE = _database_available()
 
 requires_database = pytest.mark.skipif(
     not DATABASE_AVAILABLE,
-    reason="PostgreSQL/PostGIS is not available. Start docker-compose and run migrations.",
+    reason="PostgreSQL/PostGIS is not available. Start PostgreSQL local and run migrations.",
 )
 
 

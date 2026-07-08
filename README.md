@@ -83,6 +83,13 @@ Endpoints principales:
 - `GET /api/v1/aois` — listar AOIs
 - `GET /api/v1/aois/{aoi_id}` — obtener AOI
 - `DELETE /api/v1/aois/{aoi_id}` — eliminar AOI
+- `POST /api/v1/scenes` — crear escena con bandas (metadata)
+- `GET /api/v1/scenes` — listar escenas
+- `GET /api/v1/scenes/{scene_id}` — detalle de escena con bandas
+- `GET /api/v1/scenes/{scene_id}/bands` — listar bandas de escena
+- `DELETE /api/v1/scenes/{scene_id}` — eliminar escena
+
+Ver [docs/scenes_metadata.md](../docs/scenes_metadata.md) para escenas satelitales.
 
 Documentación interactiva: `http://localhost:8000/docs`
 
@@ -92,7 +99,7 @@ Documentación interactiva: `http://localhost:8000/docs`
 pytest
 ```
 
-Los tests de integración de AOIs requieren PostgreSQL levantado y migraciones aplicadas.
+Los tests de integración de AOIs y escenas requieren PostgreSQL levantado y migraciones aplicadas.
 
 ## Variables de entorno
 

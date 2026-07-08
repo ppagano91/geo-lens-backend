@@ -1,0 +1,38 @@
+from __future__ import annotations
+
+from datetime import date, datetime
+from decimal import Decimal
+from typing import Any, Optional
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from app.schemas.band import BandCreate, BandRead
+
+
+class SceneCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    source: str = Field(..., min_length=1, max_length=100)
+    acquisition_date: date
+    cloud_cover: Optional[Decimal] = None
+    footprint: dict[str, Any]
+    metadata: Optional[dict[str, Any]] = None
+    bands: list[BandCreate] = Field(default_factory=list)
+
+
+class SceneListItem(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    name: str
+    source: str
+    acquisition_date: date
+    cloud_cover: Optional[Decimal]
+    footprint: dict[str, Any]
+    metadata: Optional[dict[str, Any]]
+    created_at: datetime
+    updated_at: datetime
+
+
+class SceneRead(SceneListItem):
+    bands: list[BandRead]
