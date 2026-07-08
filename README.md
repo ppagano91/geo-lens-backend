@@ -65,3 +65,4 @@ Los tests de integración de AOIs requieren PostgreSQL levantado y migraciones a
 |---|---|
 | `DATABASE_URL` | Conexión SQLAlchemy (`postgresql+psycopg://...`) |
 | `APP_ENV` | Entorno de ejecución (`local`) |
+| `CORS_ORIGINS` | Orígenes permitidos para CORS (ej. `http://localhost:5173`) |
