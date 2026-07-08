@@ -6,6 +6,10 @@ class Settings(BaseSettings):
 
     app_name: str = "GeoChange Analyzer API"
     version: str = "0.1.0"
+    app_env: str = "local"
+    database_url: str = (
+        "postgresql+psycopg://geochange:geochange@localhost:5432/geochange"
+    )
 
 
 settings = Settings()
