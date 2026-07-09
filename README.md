@@ -88,8 +88,11 @@ Endpoints principales:
 - `GET /api/v1/scenes/{scene_id}` — detalle de escena con bandas
 - `GET /api/v1/scenes/{scene_id}/bands` — listar bandas de escena
 - `DELETE /api/v1/scenes/{scene_id}` — eliminar escena
+- `GET /api/v1/indices` — listar definiciones de índices espectrales
+- `GET /api/v1/indices/{index_key}` — detalle de índice por key (`ndvi`, `NDVI`, …)
 
 Ver [docs/scenes_metadata.md](../docs/scenes_metadata.md) para escenas satelitales.
+Ver [docs/spectral_indices.md](../docs/spectral_indices.md) para el catálogo de índices (solo definiciones, sin cálculo).
 
 Documentación interactiva: `http://localhost:8000/docs`
 
@@ -99,7 +102,7 @@ Documentación interactiva: `http://localhost:8000/docs`
 pytest
 ```
 
-Los tests de integración de AOIs y escenas requieren PostgreSQL levantado y migraciones aplicadas.
+Los tests de integración de AOIs, escenas e índices requieren PostgreSQL levantado y migraciones aplicadas.
 
 ## Variables de entorno
 

@@ -6,7 +6,7 @@ from sqlalchemy import engine_from_config, pool
 
 from app.core.config import settings
 from app.db.base import Base
-from app.models import Aoi, RasterBand, RasterScene  # noqa: F401
+from app.models import Aoi, RasterBand, RasterScene, SpectralIndexDefinition  # noqa: F401
 
 config = context.config
 
