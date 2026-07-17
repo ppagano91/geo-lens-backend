@@ -13,6 +13,7 @@ dependencies = [
     "alembic>=1.14.0",
     "shapely>=2.0.0",
     "numpy>=2.0.0",
+    "rasterio>=1.4.0",
 ]
 
 [project.optional-dependencies]

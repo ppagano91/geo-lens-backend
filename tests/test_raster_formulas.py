@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import inspect
-import sys
 
 import numpy as np
 import pytest
@@ -159,8 +158,8 @@ def test_no_rasterio_or_file_io() -> None:
     """Formulas module must not import rasterio or open files."""
     import app.raster.formulas as formulas
 
-    assert "rasterio" not in sys.modules
-    assert "rioxarray" not in sys.modules
+    # Intentionally do not assert on sys.modules: other modules (readers) may
+    # import rasterio in the same pytest session without polluting formulas.
     assert "rasterio" not in formulas.__dict__
     assert "rioxarray" not in formulas.__dict__
 

@@ -48,6 +48,7 @@ Ajuste `DATABASE_URL` en `backend/.env` según sus credenciales locales:
 DATABASE_URL=postgresql+psycopg://geochange:geochange@localhost:5432/geochange
 APP_ENV=local
 CORS_ORIGINS=http://localhost:5173
+DATA_ROOT=../data
 ```
 
 ### 5. Aplicar migraciones
@@ -91,11 +92,14 @@ Endpoints principales:
 - `GET /api/v1/indices` — listar definiciones de índices espectrales
 - `GET /api/v1/indices/{index_key}` — detalle de índice por key (`ndvi`, `NDVI`, …)
 - `GET /api/v1/spatial-coverage/aoi/{aoi_id}/scene/{scene_id}` — cobertura espacial AOI vs footprint
+- `GET /api/v1/raster-bands/{band_id}/metadata` — metadata del GeoTIFF local de la banda
+- `GET /api/v1/raster-bands/{band_id}/sample-stats` — estadísticas de muestra reducida (banda 1)
 
 Ver [docs/scenes_metadata.md](../docs/scenes_metadata.md) para escenas satelitales.
 Ver [docs/spectral_indices.md](../docs/spectral_indices.md) para el catálogo de índices (solo definiciones, sin cálculo).
 Ver [docs/raster_formulas.md](../docs/raster_formulas.md) para fórmulas NumPy puras (Fase 6B; sin lectura de GeoTIFF ni endpoints de cálculo).
 Ver [docs/spatial_coverage.md](../docs/spatial_coverage.md) para cobertura espacial AOI vs escena (Fase 6C; PostGIS, sin raster).
+Ver [docs/raster_reading.md](../docs/raster_reading.md) para lectura local de GeoTIFF (Fase 7A; metadata / sample-stats).
 
 Documentación interactiva: `http://localhost:8000/docs`
 
@@ -106,6 +110,7 @@ pytest
 ```
 
 Los tests de integración de AOIs, escenas e índices requieren PostgreSQL levantado y migraciones aplicadas.
+Los tests de lectura raster generan un GeoTIFF temporal en runtime (no dependen de archivos en `data/`).
 
 ## Variables de entorno
 
@@ -114,3 +119,4 @@ Los tests de integración de AOIs, escenas e índices requieren PostgreSQL levan
 | `DATABASE_URL` | Conexión SQLAlchemy (`postgresql+psycopg://usuario:password@localhost:5432/geochange`) |
 | `APP_ENV` | Entorno de ejecución (`local`) |
 | `CORS_ORIGINS` | Orígenes permitidos para CORS (ej. `http://localhost:5173`) |
+| `DATA_ROOT` | Raíz para resolver `asset_path` relativos (default `../data`) |
