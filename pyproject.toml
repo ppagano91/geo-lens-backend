@@ -12,6 +12,7 @@ dependencies = [
     "geoalchemy2>=0.15.0",
     "alembic>=1.14.0",
     "shapely>=2.0.0",
+    "numpy>=2.0.0",
 ]
 
 [project.optional-dependencies]
