@@ -90,9 +90,12 @@ Endpoints principales:
 - `DELETE /api/v1/scenes/{scene_id}` — eliminar escena
 - `GET /api/v1/indices` — listar definiciones de índices espectrales
 - `GET /api/v1/indices/{index_key}` — detalle de índice por key (`ndvi`, `NDVI`, …)
+- `GET /api/v1/spatial-coverage/aoi/{aoi_id}/scene/{scene_id}` — cobertura espacial AOI vs footprint
 
 Ver [docs/scenes_metadata.md](../docs/scenes_metadata.md) para escenas satelitales.
 Ver [docs/spectral_indices.md](../docs/spectral_indices.md) para el catálogo de índices (solo definiciones, sin cálculo).
+Ver [docs/raster_formulas.md](../docs/raster_formulas.md) para fórmulas NumPy puras (Fase 6B; sin lectura de GeoTIFF ni endpoints de cálculo).
+Ver [docs/spatial_coverage.md](../docs/spatial_coverage.md) para cobertura espacial AOI vs escena (Fase 6C; PostGIS, sin raster).
 
 Documentación interactiva: `http://localhost:8000/docs`
 
