@@ -100,6 +100,7 @@ Ver [docs/spectral_indices.md](../docs/spectral_indices.md) para el catálogo de
 Ver [docs/raster_formulas.md](../docs/raster_formulas.md) para fórmulas NumPy puras (Fase 6B; sin lectura de GeoTIFF ni endpoints de cálculo).
 Ver [docs/spatial_coverage.md](../docs/spatial_coverage.md) para cobertura espacial AOI vs escena (Fase 6C; PostGIS, sin raster).
 Ver [docs/raster_reading.md](../docs/raster_reading.md) para lectura local de GeoTIFF (Fase 7A; metadata / sample-stats).
+Ver [docs/local_sample_rasters.md](../docs/local_sample_rasters.md) para generar GeoTIFF de prueba en `data/` (Fase 7A.1).
 
 Documentación interactiva: `http://localhost:8000/docs`
 
