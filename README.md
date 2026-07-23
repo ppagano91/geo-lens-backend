@@ -94,7 +94,8 @@ Endpoints principales:
 - `GET /api/v1/spatial-coverage/aoi/{aoi_id}/scene/{scene_id}` — cobertura espacial AOI vs footprint
 - `GET /api/v1/raster-bands/{band_id}/metadata` — metadata del GeoTIFF local de la banda
 - `GET /api/v1/raster-bands/{band_id}/sample-stats` — estadísticas de muestra reducida (banda 1)
-- `POST /api/v1/scenes/{scene_id}/indices/ndvi/compute` — calcular NDVI local (B08/B04) y devolver stats JSON
+- `POST /api/v1/scenes/{scene_id}/indices/{index_key}/compute` — calcular índice local (`ndvi`, `ndwi`, `nbr`, `ndmi`) y devolver stats JSON
+- `POST /api/v1/scenes/{scene_id}/indices/ndvi/compute` — alias de compatibilidad (Fase 7B)
 
 Ver [docs/scenes_metadata.md](../docs/scenes_metadata.md) para escenas satelitales.
 Ver [docs/spectral_indices.md](../docs/spectral_indices.md) para el catálogo de índices (solo definiciones, sin cálculo).
@@ -104,6 +105,8 @@ Ver [docs/raster_reading.md](../docs/raster_reading.md) para lectura local de Ge
 Ver [docs/local_sample_rasters.md](../docs/local_sample_rasters.md) para generar GeoTIFF de prueba en `data/` (Fase 7A.1).
 Ver [docs/ndvi_compute.md](../docs/ndvi_compute.md) para cálculo local de NDVI (Fase 7B; resumen JSON, sin guardar raster).
 Ver [docs/fase-7b2-resultados.md](../docs/fase-7b2-resultados.md) para validación end-to-end local (Fase 7B.2; rasters → seed SQL → NDVI).
+Ver [docs/index_compute.md](../docs/index_compute.md) para cálculo genérico de índices (Fase 7C; NDVI/NDWI/NBR/NDMI).
+Ver [docs/roadmap.md](../docs/roadmap.md) para el estado de fases.
 Seed SQL: `scripts/seed_synthetic_scene.sql` (escena sintética + AOIs demo).
 
 Documentación interactiva: `http://localhost:8000/docs`

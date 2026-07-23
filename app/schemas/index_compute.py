@@ -1,4 +1,4 @@
-"""Pydantic schemas for local spectral index compute responses (Fase 7B)."""
+"""Pydantic schemas for local spectral index compute responses (Fase 7B/7C)."""
 
 from __future__ import annotations
 
@@ -14,6 +14,8 @@ class IndexBandUsed(BaseModel):
 
 
 class IndexBandsUsed(BaseModel):
+    """NDVI-shaped bands_used (Fase 7B). Prefer role→band maps on IndexComputeResult."""
+
     red: IndexBandUsed
     nir: IndexBandUsed
 
@@ -26,17 +28,23 @@ class IndexRasterInfo(BaseModel):
 
 
 class IndexStats(BaseModel):
-    min: Optional[float] = Field(default=None, description="Minimum of valid NDVI pixels")
-    max: Optional[float] = Field(default=None, description="Maximum of valid NDVI pixels")
-    mean: Optional[float] = Field(default=None, description="Mean of valid NDVI pixels")
+    min: Optional[float] = Field(default=None, description="Minimum of valid index pixels")
+    max: Optional[float] = Field(default=None, description="Maximum of valid index pixels")
+    mean: Optional[float] = Field(default=None, description="Mean of valid index pixels")
     valid_pixels: int
     nodata_pixels: int
 
 
-class NdviComputeResult(BaseModel):
+class IndexComputeResult(BaseModel):
+    """In-memory local index compute summary (no GeoTIFF write-back)."""
+
     scene_id: UUID
-    index: str = "NDVI"
+    index: str
     status: str = "computed"
-    bands_used: IndexBandsUsed
+    bands_used: dict[str, IndexBandUsed]
     raster: IndexRasterInfo
     stats: IndexStats
+
+
+# Backward-compatible alias for Fase 7B callers / OpenAPI.
+NdviComputeResult = IndexComputeResult

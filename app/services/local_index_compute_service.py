@@ -1,10 +1,14 @@
 """Compute spectral indices from local GeoTIFF bands registered on a scene.
 
-Fase 7B: in-memory NDVI only (no write-back, previews, or async jobs).
+Fase 7C: generic in-memory compute via an index registry (no write-back,
+previews, AOI crop, or async jobs). Fase 7B NDVI remains available as a
+thin wrapper over the same path.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from uuid import UUID
 
 import numpy as np
@@ -12,7 +16,12 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models.band import RasterBand
-from app.raster.formulas import calculate_ndvi
+from app.raster.formulas import (
+    calculate_nbr,
+    calculate_ndmi,
+    calculate_ndvi,
+    calculate_ndwi,
+)
 from app.raster.readers import (
     RasterArray,
     RasterFileNotFoundError,
@@ -22,17 +31,72 @@ from app.raster.readers import (
 )
 from app.repositories.scene_repository import SceneRepository
 from app.schemas.index_compute import (
-    IndexBandsUsed,
     IndexBandUsed,
+    IndexComputeResult,
     IndexRasterInfo,
     IndexStats,
     NdviComputeResult,
 )
 from app.services.scene_service import SceneNotFoundError
 
-# Sentinel-2-like keys for NDVI (NIR / Red).
+# Sentinel-2-like keys (kept for Fase 7B imports / tests).
 NDVI_RED_BAND_KEY = "B04"
 NDVI_NIR_BAND_KEY = "B08"
+
+FormulaFn = Callable[..., np.ndarray]
+
+
+@dataclass(frozen=True)
+class LocalIndexSpec:
+    """Internal mapping: index_key → required bands + NumPy formula."""
+
+    key: str
+    display_name: str
+    # Role → Sentinel-like band_key (aligned with spectral_index_definitions).
+    required_bands: Mapping[str, str]
+    # Argument order expected by ``formula`` (roles from required_bands).
+    formula_roles: Sequence[str]
+    formula: FormulaFn
+
+
+LOCAL_INDEX_REGISTRY: dict[str, LocalIndexSpec] = {
+    "ndvi": LocalIndexSpec(
+        key="ndvi",
+        display_name="NDVI",
+        required_bands={"red": NDVI_RED_BAND_KEY, "nir": NDVI_NIR_BAND_KEY},
+        formula_roles=("nir", "red"),
+        formula=calculate_ndvi,
+    ),
+    "ndwi": LocalIndexSpec(
+        key="ndwi",
+        display_name="NDWI",
+        required_bands={"green": "B03", "nir": "B08"},
+        formula_roles=("green", "nir"),
+        formula=calculate_ndwi,
+    ),
+    "nbr": LocalIndexSpec(
+        key="nbr",
+        display_name="NBR",
+        required_bands={"nir": "B08", "swir2": "B12"},
+        formula_roles=("nir", "swir2"),
+        formula=calculate_nbr,
+    ),
+    "ndmi": LocalIndexSpec(
+        key="ndmi",
+        display_name="NDMI",
+        required_bands={"nir": "B08", "swir1": "B11"},
+        formula_roles=("nir", "swir1"),
+        formula=calculate_ndmi,
+    ),
+}
+
+
+class UnsupportedIndexError(Exception):
+    """Requested index_key is not available for local compute."""
+
+    def __init__(self, index_key: str) -> None:
+        self.index_key = index_key
+        super().__init__(f"Spectral index '{index_key}' is not supported for local compute")
 
 
 class MissingRequiredBandError(Exception):
@@ -58,33 +122,47 @@ class LocalIndexComputeService:
         self.data_root = settings.data_root_path
 
     def compute_ndvi(self, scene_id: UUID) -> NdviComputeResult:
+        """Fase 7B compatibility wrapper around :meth:`compute_index`."""
+        return self.compute_index(scene_id, "ndvi")
+
+    def compute_index(self, scene_id: UUID, index_key: str) -> IndexComputeResult:
+        normalized_key = index_key.strip().lower()
+        spec = LOCAL_INDEX_REGISTRY.get(normalized_key)
+        if spec is None:
+            raise UnsupportedIndexError(normalized_key)
+
         scene = self.repository.get_by_id(scene_id)
         if scene is None:
             raise SceneNotFoundError(str(scene_id))
 
         bands_by_key = {band.band_key: band for band in scene.bands}
-        red_band = self._require_band(scene_id, bands_by_key, NDVI_RED_BAND_KEY)
-        nir_band = self._require_band(scene_id, bands_by_key, NDVI_NIR_BAND_KEY)
+        role_bands: dict[str, RasterBand] = {}
+        for role, band_key in spec.required_bands.items():
+            role_bands[role] = self._require_band(scene_id, bands_by_key, band_key)
 
-        red = read_raster_array(red_band.asset_path, self.data_root)
-        nir = read_raster_array(nir_band.asset_path, self.data_root)
-        self._validate_aligned(red, nir, red_key=NDVI_RED_BAND_KEY, nir_key=NDVI_NIR_BAND_KEY)
+        role_arrays: dict[str, RasterArray] = {
+            role: read_raster_array(band.asset_path, self.data_root)
+            for role, band in role_bands.items()
+        }
+        self._validate_aligned(role_arrays)
 
-        ndvi = calculate_ndvi(nir.data, red.data)
-        stats = self._compute_stats(ndvi)
+        formula_args = [role_arrays[role].data for role in spec.formula_roles]
+        index_array = spec.formula(*formula_args)
+        stats = self._compute_stats(index_array)
 
-        return NdviComputeResult(
+        reference = next(iter(role_arrays.values()))
+        return IndexComputeResult(
             scene_id=scene_id,
-            index="NDVI",
+            index=spec.display_name,
             status="computed",
-            bands_used=IndexBandsUsed(
-                red=IndexBandUsed(band_key=red_band.band_key, band_id=red_band.id),
-                nir=IndexBandUsed(band_key=nir_band.band_key, band_id=nir_band.id),
-            ),
+            bands_used={
+                role: IndexBandUsed(band_key=band.band_key, band_id=band.id)
+                for role, band in role_bands.items()
+            },
             raster=IndexRasterInfo(
-                width=red.width,
-                height=red.height,
-                crs=red.crs,
+                width=reference.width,
+                height=reference.height,
+                crs=reference.crs,
                 dtype="float32",
             ),
             stats=stats,
@@ -102,34 +180,52 @@ class LocalIndexComputeService:
         return band
 
     @staticmethod
-    def _validate_aligned(
-        red: RasterArray,
-        nir: RasterArray,
+    def _validate_aligned(role_arrays: Mapping[str, RasterArray]) -> None:
+        items = list(role_arrays.items())
+        if len(items) < 2:
+            raise IncompatibleRasterBandsError(
+                "At least two bands are required for spectral index compute"
+            )
+
+        ref_key, ref = items[0]
+        for other_key, other in items[1:]:
+            LocalIndexComputeService._validate_pair(
+                ref,
+                other,
+                left_key=ref_key,
+                right_key=other_key,
+            )
+
+    @staticmethod
+    def _validate_pair(
+        left: RasterArray,
+        right: RasterArray,
         *,
-        red_key: str,
-        nir_key: str,
+        left_key: str,
+        right_key: str,
     ) -> None:
-        if red.count != 1 or nir.count != 1:
+        label = f"{left_key}/{right_key}"
+        if left.count != 1 or right.count != 1:
             raise IncompatibleRasterBandsError(
-                f"Bands {red_key}/{nir_key} must be single-band rasters"
+                f"Bands {label} must be single-band rasters"
             )
-        if red.crs != nir.crs:
+        if left.crs != right.crs:
             raise IncompatibleRasterBandsError(
-                f"Bands {red_key}/{nir_key} have different CRS: {red.crs!r} vs {nir.crs!r}"
+                f"Bands {label} have different CRS: {left.crs!r} vs {right.crs!r}"
             )
-        if red.width != nir.width or red.height != nir.height:
+        if left.width != right.width or left.height != right.height:
             raise IncompatibleRasterBandsError(
-                f"Bands {red_key}/{nir_key} have different dimensions: "
-                f"{red.width}x{red.height} vs {nir.width}x{nir.height}"
+                f"Bands {label} have different dimensions: "
+                f"{left.width}x{left.height} vs {right.width}x{right.height}"
             )
-        if red.transform != nir.transform:
+        if left.transform != right.transform:
             raise IncompatibleRasterBandsError(
-                f"Bands {red_key}/{nir_key} have different geotransforms"
+                f"Bands {label} have different geotransforms"
             )
-        if red.data.shape != nir.data.shape:
+        if left.data.shape != right.data.shape:
             raise IncompatibleRasterBandsError(
-                f"Bands {red_key}/{nir_key} have incompatible array shapes: "
-                f"{red.data.shape} vs {nir.data.shape}"
+                f"Bands {label} have incompatible array shapes: "
+                f"{left.data.shape} vs {right.data.shape}"
             )
 
     @staticmethod
@@ -159,8 +255,11 @@ class LocalIndexComputeService:
 
 __all__ = [
     "LocalIndexComputeService",
+    "LocalIndexSpec",
+    "LOCAL_INDEX_REGISTRY",
     "MissingRequiredBandError",
     "IncompatibleRasterBandsError",
+    "UnsupportedIndexError",
     "SceneNotFoundError",
     "RasterFileNotFoundError",
     "RasterPathError",

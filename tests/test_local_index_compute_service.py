@@ -16,6 +16,7 @@ from app.services.local_index_compute_service import (
     LocalIndexComputeService,
     MissingRequiredBandError,
     SceneNotFoundError,
+    UnsupportedIndexError,
 )
 
 
@@ -94,10 +95,10 @@ def test_compute_ndvi_success(tmp_path: Path) -> None:
     assert result.index == "NDVI"
     assert result.status == "computed"
     assert result.scene_id == scene.id
-    assert result.bands_used.red.band_key == "B04"
-    assert result.bands_used.red.band_id == red_band.id
-    assert result.bands_used.nir.band_key == "B08"
-    assert result.bands_used.nir.band_id == nir_band.id
+    assert result.bands_used["red"].band_key == "B04"
+    assert result.bands_used["red"].band_id == red_band.id
+    assert result.bands_used["nir"].band_key == "B08"
+    assert result.bands_used["nir"].band_id == nir_band.id
     assert result.raster.width == 5
     assert result.raster.height == 5
     assert result.raster.crs == "EPSG:4326"
@@ -177,3 +178,71 @@ def test_compute_ndvi_incompatible_crs(tmp_path: Path) -> None:
 
     with pytest.raises(IncompatibleRasterBandsError, match="CRS"):
         service.compute_ndvi(scene.id)
+
+
+def test_compute_index_ndwi_success(tmp_path: Path) -> None:
+    green_path = tmp_path / "B03.tif"
+    nir_path = tmp_path / "B08.tif"
+    # NDWI = (green - nir) / (green + nir) → (300-100)/(300+100) = 0.5
+    _write_band(green_path, np.full((4, 4), 300, dtype=np.uint16))
+    _write_band(nir_path, np.full((4, 4), 100, dtype=np.uint16))
+    scene = _scene(bands=[_band("B03", green_path), _band("B08", nir_path)])
+    service = _service_with_scene(scene)
+
+    result = service.compute_index(scene.id, "ndwi")
+
+    assert result.index == "NDWI"
+    assert result.bands_used["green"].band_key == "B03"
+    assert result.bands_used["nir"].band_key == "B08"
+    assert result.stats.mean == pytest.approx(0.5)
+    assert result.stats.valid_pixels == 16
+
+
+def test_compute_index_nbr_success(tmp_path: Path) -> None:
+    nir_path = tmp_path / "B08.tif"
+    swir2_path = tmp_path / "B12.tif"
+    # NBR = (nir - swir2) / (nir + swir2) → (300-100)/(300+100) = 0.5
+    _write_band(nir_path, np.full((3, 3), 300, dtype=np.uint16))
+    _write_band(swir2_path, np.full((3, 3), 100, dtype=np.uint16))
+    scene = _scene(bands=[_band("B08", nir_path), _band("B12", swir2_path)])
+    service = _service_with_scene(scene)
+
+    result = service.compute_index(scene.id, "NBR")
+
+    assert result.index == "NBR"
+    assert result.bands_used["nir"].band_key == "B08"
+    assert result.bands_used["swir2"].band_key == "B12"
+    assert result.stats.mean == pytest.approx(0.5)
+
+
+def test_compute_index_ndmi_success(tmp_path: Path) -> None:
+    nir_path = tmp_path / "B08.tif"
+    swir1_path = tmp_path / "B11.tif"
+    # NDMI = (nir - swir1) / (nir + swir1) → (300-100)/(300+100) = 0.5
+    _write_band(nir_path, np.full((3, 3), 300, dtype=np.uint16))
+    _write_band(swir1_path, np.full((3, 3), 100, dtype=np.uint16))
+    scene = _scene(bands=[_band("B08", nir_path), _band("B11", swir1_path)])
+    service = _service_with_scene(scene)
+
+    result = service.compute_index(scene.id, "ndmi")
+
+    assert result.index == "NDMI"
+    assert result.bands_used["swir1"].band_key == "B11"
+    assert result.stats.mean == pytest.approx(0.5)
+
+
+def test_compute_index_unsupported() -> None:
+    service = _service_with_scene(_scene(bands=[]))
+
+    with pytest.raises(UnsupportedIndexError, match="evi"):
+        service.compute_index(uuid4(), "evi")
+
+
+def test_compute_index_missing_required_band_ndwi(tmp_path: Path) -> None:
+    nir_path = tmp_path / "B08.tif"
+    _write_band(nir_path, np.full((3, 3), 100, dtype=np.uint16))
+    scene = _scene(bands=[_band("B08", nir_path)])
+    service = _service_with_scene(scene)
+
+    with pytest.raises(MissingRequiredBandError, match="B03"):
+        service.compute_index(scene.id, "ndwi")
