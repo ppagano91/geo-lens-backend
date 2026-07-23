@@ -1,4 +1,4 @@
-"""Local GeoTIFF reading helpers (metadata and small samples). No index math."""
+"""Local GeoTIFF reading helpers (metadata, samples, and full arrays). No index math."""
 
 from __future__ import annotations
 
@@ -79,6 +79,20 @@ class RasterSampleStats:
     sample_mean: float | None
     sample_has_nan: bool
     valid_count: int
+
+
+@dataclass(frozen=True)
+class RasterArray:
+    """Full single-band array plus georeferencing needed for index alignment checks."""
+
+    path: str
+    data: np.ndarray
+    width: int
+    height: int
+    crs: str | None
+    transform: tuple[float, float, float, float, float, float]
+    nodata: float | None
+    count: int
 
 
 def resolve_asset_path(asset_path: str, data_root: Path | str) -> Path:
@@ -214,6 +228,56 @@ def read_raster_sample(
     )
 
 
+def read_raster_array(asset_path: str, data_root: Path | str) -> RasterArray:
+    """Read band 1 of a local GeoTIFF as float32, masking nodata to NaN.
+
+    Requires a single-band raster. Multi-band files raise ``RasterReadError``.
+    """
+    path = resolve_asset_path(asset_path, data_root)
+    path_str = str(path)
+
+    if not path.exists() or not path.is_file():
+        raise RasterFileNotFoundError(f"Raster file not found: {path_str}")
+
+    try:
+        with rasterio.open(path) as dataset:
+            if dataset.count != 1:
+                raise RasterReadError(
+                    f"Raster must have exactly 1 band; got {dataset.count}: {path_str}"
+                )
+
+            raw = dataset.read(1)
+            crs = dataset.crs.to_string() if dataset.crs else None
+            transform = tuple(float(v) for v in list(dataset.transform)[:6])
+            nodata = _normalize_nodata(dataset.nodata)
+            data = _to_float32_with_nodata(raw, nodata)
+
+            return RasterArray(
+                path=path_str,
+                data=data,
+                width=int(dataset.width),
+                height=int(dataset.height),
+                crs=crs,
+                transform=transform,
+                nodata=nodata,
+                count=int(dataset.count),
+            )
+    except RasterFileNotFoundError:
+        raise
+    except RasterReadError:
+        raise
+    except (RasterioIOError, OSError, ValueError) as exc:
+        raise RasterReadError(f"Cannot read raster array: {path_str}") from exc
+
+
+def _to_float32_with_nodata(raw: np.ndarray, nodata: float | None) -> np.ndarray:
+    """Cast to float32 and replace nodata (and existing NaNs) with NaN."""
+    data = np.asarray(raw, dtype=np.float32)
+    if nodata is not None:
+        data = np.where(data == np.float32(nodata), np.float32(np.nan), data)
+    return data
+
+
 def _normalize_nodata(value: Any) -> float | None:
     if value is None:
         return None
@@ -232,7 +296,9 @@ __all__ = [
     "RasterReadError",
     "RasterMetadata",
     "RasterSampleStats",
+    "RasterArray",
     "resolve_asset_path",
     "read_raster_metadata",
     "read_raster_sample",
+    "read_raster_array",
 ]

@@ -5,7 +5,16 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.schemas.band import BandRead
+from app.schemas.index_compute import NdviComputeResult
 from app.schemas.scene import SceneCreate, SceneListItem, SceneRead
+from app.services.local_index_compute_service import (
+    IncompatibleRasterBandsError,
+    LocalIndexComputeService,
+    MissingRequiredBandError,
+    RasterFileNotFoundError,
+    RasterPathError,
+    RasterReadError,
+)
 from app.services.scene_service import (
     BandKeyDuplicateError,
     GeometryValidationError,
@@ -64,6 +73,50 @@ def list_scene_bands(scene_id: UUID, db: Session = Depends(get_db)) -> list[Band
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Scene {scene_id} not found",
+        ) from exc
+
+
+@router.post(
+    "/{scene_id}/indices/ndvi/compute",
+    response_model=NdviComputeResult,
+)
+def compute_scene_ndvi(
+    scene_id: UUID,
+    db: Session = Depends(get_db),
+) -> NdviComputeResult:
+    """Compute NDVI in-memory from local B08 (NIR) and B04 (Red) GeoTIFFs."""
+    service = LocalIndexComputeService(db)
+    try:
+        return service.compute_ndvi(scene_id)
+    except SceneNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Scene {scene_id} not found",
+        ) from exc
+    except MissingRequiredBandError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+    except IncompatibleRasterBandsError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+    except RasterFileNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except RasterPathError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+    except RasterReadError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
         ) from exc
 
 

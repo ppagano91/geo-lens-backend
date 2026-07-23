@@ -25,11 +25,11 @@ copy .env.example .env
 pg_isready -h localhost -p 5432
 ```
 
-### 2. Crear base `geochange` (si no existe)
+### 2. Crear base `geolens` (si no existe)
 
 ```powershell
-psql -U postgres -c "CREATE USER geochange WITH PASSWORD 'geochange';"
-psql -U postgres -c "CREATE DATABASE geochange OWNER geochange;"
+psql -U postgres -c "CREATE USER postgres WITH PASSWORD 'password';"
+psql -U postgres -c "CREATE DATABASE geolens OWNER postgres;"
 ```
 
 Omita los comandos que fallen porque el usuario o la base ya existen.
@@ -45,7 +45,7 @@ psql -U postgres -d geochange -c "CREATE EXTENSION IF NOT EXISTS postgis;"
 Ajuste `DATABASE_URL` en `backend/.env` según sus credenciales locales:
 
 ```env
-DATABASE_URL=postgresql+psycopg://geochange:geochange@localhost:5432/geochange
+DATABASE_URL=postgresql+psycopg://user:password@localhost:5432/geolens
 APP_ENV=local
 CORS_ORIGINS=http://localhost:5173
 DATA_ROOT=../data
@@ -69,7 +69,7 @@ Desde la raíz del proyecto, si prefiere un contenedor en lugar de PostgreSQL lo
 docker compose up -d
 ```
 
-Use las mismas credenciales en `DATABASE_URL` (`geochange:geochange@localhost:5432/geochange`).
+Use las mismas credenciales en `DATABASE_URL` (`user:password@localhost:5432/geolens`).
 
 ## Ejecutar
 
@@ -94,6 +94,7 @@ Endpoints principales:
 - `GET /api/v1/spatial-coverage/aoi/{aoi_id}/scene/{scene_id}` — cobertura espacial AOI vs footprint
 - `GET /api/v1/raster-bands/{band_id}/metadata` — metadata del GeoTIFF local de la banda
 - `GET /api/v1/raster-bands/{band_id}/sample-stats` — estadísticas de muestra reducida (banda 1)
+- `POST /api/v1/scenes/{scene_id}/indices/ndvi/compute` — calcular NDVI local (B08/B04) y devolver stats JSON
 
 Ver [docs/scenes_metadata.md](../docs/scenes_metadata.md) para escenas satelitales.
 Ver [docs/spectral_indices.md](../docs/spectral_indices.md) para el catálogo de índices (solo definiciones, sin cálculo).
@@ -101,6 +102,7 @@ Ver [docs/raster_formulas.md](../docs/raster_formulas.md) para fórmulas NumPy p
 Ver [docs/spatial_coverage.md](../docs/spatial_coverage.md) para cobertura espacial AOI vs escena (Fase 6C; PostGIS, sin raster).
 Ver [docs/raster_reading.md](../docs/raster_reading.md) para lectura local de GeoTIFF (Fase 7A; metadata / sample-stats).
 Ver [docs/local_sample_rasters.md](../docs/local_sample_rasters.md) para generar GeoTIFF de prueba en `data/` (Fase 7A.1).
+Ver [docs/ndvi_compute.md](../docs/ndvi_compute.md) para cálculo local de NDVI (Fase 7B; resumen JSON, sin guardar raster).
 
 Documentación interactiva: `http://localhost:8000/docs`
 
