@@ -11,5 +11,5 @@ def test_health_endpoint() -> None:
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "ok"
-    assert data["service"] == "GeoChange Analyzer API"
+    assert data["service"] == "GeoLens Analyzer API"
     assert data["version"] == "0.1.0"

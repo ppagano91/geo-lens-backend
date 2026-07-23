@@ -103,6 +103,8 @@ Ver [docs/spatial_coverage.md](../docs/spatial_coverage.md) para cobertura espac
 Ver [docs/raster_reading.md](../docs/raster_reading.md) para lectura local de GeoTIFF (Fase 7A; metadata / sample-stats).
 Ver [docs/local_sample_rasters.md](../docs/local_sample_rasters.md) para generar GeoTIFF de prueba en `data/` (Fase 7A.1).
 Ver [docs/ndvi_compute.md](../docs/ndvi_compute.md) para cálculo local de NDVI (Fase 7B; resumen JSON, sin guardar raster).
+Ver [docs/fase-7b2-resultados.md](../docs/fase-7b2-resultados.md) para validación end-to-end local (Fase 7B.2; rasters → seed SQL → NDVI).
+Seed SQL: `scripts/seed_synthetic_scene.sql` (escena sintética + AOIs demo).
 
 Documentación interactiva: `http://localhost:8000/docs`
 
