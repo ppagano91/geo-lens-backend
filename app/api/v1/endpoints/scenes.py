@@ -6,7 +6,11 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.schemas.band import BandRead
-from app.schemas.index_compute import IndexComputeResult, NdviComputeResult
+from app.schemas.index_compute import (
+    IndexComputeResult,
+    IndexComputeSaveResult,
+    NdviComputeResult,
+)
 from app.schemas.scene import SceneCreate, SceneListItem, SceneRead
 from app.services.local_index_compute_service import (
     IncompatibleRasterBandsError,
@@ -15,6 +19,7 @@ from app.services.local_index_compute_service import (
     RasterFileNotFoundError,
     RasterPathError,
     RasterReadError,
+    RasterWriteError,
     UnsupportedIndexError,
 )
 from app.services.scene_service import (
@@ -54,7 +59,7 @@ def _raise_index_compute_http(exc: Exception, *, scene_id: UUID) -> NoReturn:
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc),
         ) from exc
-    if isinstance(exc, (RasterPathError, RasterReadError)):
+    if isinstance(exc, (RasterPathError, RasterReadError, RasterWriteError)):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(exc),
@@ -159,6 +164,32 @@ def compute_scene_index(
         RasterFileNotFoundError,
         RasterPathError,
         RasterReadError,
+    ) as exc:
+        _raise_index_compute_http(exc, scene_id=scene_id)
+
+
+@router.post(
+    "/{scene_id}/indices/{index_key}/compute-and-save",
+    response_model=IndexComputeSaveResult,
+)
+def compute_and_save_scene_index(
+    scene_id: UUID,
+    index_key: str,
+    db: Session = Depends(get_db),
+) -> IndexComputeSaveResult:
+    """Compute a spectral index and persist it as a derived float32 GeoTIFF."""
+    service = LocalIndexComputeService(db)
+    try:
+        return service.compute_and_save_index(scene_id, index_key)
+    except (
+        SceneNotFoundError,
+        UnsupportedIndexError,
+        MissingRequiredBandError,
+        IncompatibleRasterBandsError,
+        RasterFileNotFoundError,
+        RasterPathError,
+        RasterReadError,
+        RasterWriteError,
     ) as exc:
         _raise_index_compute_http(exc, scene_id=scene_id)
 

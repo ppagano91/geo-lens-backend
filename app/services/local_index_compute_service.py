@@ -3,6 +3,9 @@
 Fase 7C: generic in-memory compute via an index registry (no write-back,
 previews, AOI crop, or async jobs). Fase 7B NDVI remains available as a
 thin wrapper over the same path.
+
+Fase 7D: optional persistence of the computed float32 array as a derived
+GeoTIFF under DATA_ROOT (CRS/transform preserved; nodata = -9999).
 """
 
 from __future__ import annotations
@@ -29,10 +32,17 @@ from app.raster.readers import (
     RasterReadError,
     read_raster_array,
 )
+from app.raster.writers import (
+    DEFAULT_INDEX_NODATA,
+    RasterWriteError,
+    write_float32_geotiff,
+)
 from app.repositories.scene_repository import SceneRepository
 from app.schemas.index_compute import (
     IndexBandUsed,
     IndexComputeResult,
+    IndexComputeSaveResult,
+    IndexOutputInfo,
     IndexRasterInfo,
     IndexStats,
     NdviComputeResult,
@@ -91,6 +101,17 @@ LOCAL_INDEX_REGISTRY: dict[str, LocalIndexSpec] = {
 }
 
 
+@dataclass(frozen=True)
+class _PreparedIndex:
+    """Shared compute payload for in-memory and save paths."""
+
+    spec: LocalIndexSpec
+    role_bands: Mapping[str, RasterBand]
+    index_array: np.ndarray
+    stats: IndexStats
+    reference: RasterArray
+
+
 class UnsupportedIndexError(Exception):
     """Requested index_key is not available for local compute."""
 
@@ -126,6 +147,41 @@ class LocalIndexComputeService:
         return self.compute_index(scene_id, "ndvi")
 
     def compute_index(self, scene_id: UUID, index_key: str) -> IndexComputeResult:
+        prepared = self._prepare_index(scene_id, index_key)
+        return self._to_compute_result(scene_id, prepared)
+
+    def compute_and_save_index(
+        self,
+        scene_id: UUID,
+        index_key: str,
+    ) -> IndexComputeSaveResult:
+        """Compute an index and persist it as a float32 GeoTIFF under DATA_ROOT."""
+        prepared = self._prepare_index(scene_id, index_key)
+        asset_path = self._derived_asset_path(scene_id, prepared.spec.key)
+        resolved = write_float32_geotiff(
+            asset_path,
+            self.data_root,
+            prepared.index_array,
+            crs=prepared.reference.crs,
+            transform=prepared.reference.transform,
+            nodata=DEFAULT_INDEX_NODATA,
+        )
+        base = self._to_compute_result(scene_id, prepared)
+        return IndexComputeSaveResult(
+            scene_id=base.scene_id,
+            index=base.index,
+            status="saved",
+            bands_used=base.bands_used,
+            raster=base.raster,
+            stats=base.stats,
+            output=IndexOutputInfo(
+                asset_path=asset_path,
+                resolved_path=str(resolved),
+                nodata=DEFAULT_INDEX_NODATA,
+            ),
+        )
+
+    def _prepare_index(self, scene_id: UUID, index_key: str) -> _PreparedIndex:
         normalized_key = index_key.strip().lower()
         spec = LOCAL_INDEX_REGISTRY.get(normalized_key)
         if spec is None:
@@ -149,15 +205,33 @@ class LocalIndexComputeService:
         formula_args = [role_arrays[role].data for role in spec.formula_roles]
         index_array = spec.formula(*formula_args)
         stats = self._compute_stats(index_array)
-
         reference = next(iter(role_arrays.values()))
+
+        return _PreparedIndex(
+            spec=spec,
+            role_bands=role_bands,
+            index_array=index_array,
+            stats=stats,
+            reference=reference,
+        )
+
+    @staticmethod
+    def _derived_asset_path(scene_id: UUID, index_key: str) -> str:
+        return f"derived/scenes/{scene_id}/{index_key}.tif"
+
+    @staticmethod
+    def _to_compute_result(
+        scene_id: UUID,
+        prepared: _PreparedIndex,
+    ) -> IndexComputeResult:
+        reference = prepared.reference
         return IndexComputeResult(
             scene_id=scene_id,
-            index=spec.display_name,
+            index=prepared.spec.display_name,
             status="computed",
             bands_used={
                 role: IndexBandUsed(band_key=band.band_key, band_id=band.id)
-                for role, band in role_bands.items()
+                for role, band in prepared.role_bands.items()
             },
             raster=IndexRasterInfo(
                 width=reference.width,
@@ -165,7 +239,7 @@ class LocalIndexComputeService:
                 crs=reference.crs,
                 dtype="float32",
             ),
-            stats=stats,
+            stats=prepared.stats,
         )
 
     @staticmethod
@@ -264,6 +338,8 @@ __all__ = [
     "RasterFileNotFoundError",
     "RasterPathError",
     "RasterReadError",
+    "RasterWriteError",
+    "DEFAULT_INDEX_NODATA",
     "NDVI_RED_BAND_KEY",
     "NDVI_NIR_BAND_KEY",
 ]
