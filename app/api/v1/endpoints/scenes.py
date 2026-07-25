@@ -2,6 +2,7 @@ from typing import NoReturn
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -13,7 +14,11 @@ from app.schemas.index_compute import (
     NdviComputeResult,
 )
 from app.schemas.scene import SceneCreate, SceneListItem, SceneRead
-from app.services.index_preview_service import IndexPreviewService, PreviewWriteError
+from app.services.index_preview_service import (
+    IndexPreviewService,
+    PreviewPngNotFoundError,
+    PreviewWriteError,
+)
 from app.services.local_index_compute_service import (
     IncompatibleRasterBandsError,
     LocalIndexComputeService,
@@ -57,6 +62,11 @@ def _raise_index_compute_http(exc: Exception, *, scene_id: UUID) -> NoReturn:
             detail=str(exc),
         ) from exc
     if isinstance(exc, RasterFileNotFoundError):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    if isinstance(exc, PreviewPngNotFoundError):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc),
@@ -216,6 +226,40 @@ def create_scene_index_preview(
         PreviewWriteError,
     ) as exc:
         _raise_index_compute_http(exc, scene_id=scene_id)
+
+
+@router.get(
+    "/{scene_id}/indices/{index_key}/preview.png",
+    response_class=FileResponse,
+    responses={
+        200: {
+            "content": {"image/png": {}},
+            "description": "Existing preview PNG (inline)",
+        },
+        404: {"description": "Unsupported index or preview PNG missing"},
+    },
+)
+def get_scene_index_preview_png(
+    scene_id: UUID,
+    index_key: str,
+) -> FileResponse:
+    """Serve an existing index preview PNG (does not regenerate)."""
+    service = IndexPreviewService()
+    try:
+        path = service.resolve_preview_png(scene_id, index_key)
+    except (
+        UnsupportedIndexError,
+        PreviewPngNotFoundError,
+        RasterPathError,
+    ) as exc:
+        _raise_index_compute_http(exc, scene_id=scene_id)
+
+    return FileResponse(
+        path,
+        media_type="image/png",
+        filename=f"{index_key.strip().lower()}.png",
+        content_disposition_type="inline",
+    )
 
 
 @router.delete("/{scene_id}", status_code=status.HTTP_204_NO_CONTENT)
