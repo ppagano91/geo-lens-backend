@@ -8,12 +8,16 @@ Fase 7D: optional persistence of the computed float32 array as a derived
 GeoTIFF under DATA_ROOT (CRS/transform preserved; nodata = -9999).
 
 PNG previews of derived GeoTIFFs live in IndexPreviewService (Fase 7E).
+
+Fase 8B: band keys are resolved from the scene sensor (source / metadata.platform)
+via role → band maps (Sentinel-2, Landsat 8, synthetic-sentinel-2).
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any
 from uuid import UUID
 
 import numpy as np
@@ -34,6 +38,10 @@ from app.raster.readers import (
     RasterReadError,
     read_raster_array,
 )
+from app.raster.sensors import (
+    detect_sensor,
+    resolve_band_key,
+)
 from app.raster.writers import (
     DEFAULT_INDEX_NODATA,
     RasterWriteError,
@@ -51,7 +59,7 @@ from app.schemas.index_compute import (
 )
 from app.services.scene_service import SceneNotFoundError
 
-# Sentinel-2-like keys (kept for Fase 7B imports / tests).
+# Sentinel-2 keys (default sensor; kept for Fase 7B imports / tests).
 NDVI_RED_BAND_KEY = "B04"
 NDVI_NIR_BAND_KEY = "B08"
 
@@ -60,13 +68,18 @@ FormulaFn = Callable[..., np.ndarray]
 
 @dataclass(frozen=True)
 class LocalIndexSpec:
-    """Internal mapping: index_key → required bands + NumPy formula."""
+    """Internal mapping: index_key → spectral roles + NumPy formula.
+
+    Physical ``band_key`` values are resolved at compute time from the scene
+    sensor map. ``required_bands`` remains the Sentinel-2 defaults for catalog
+    alignment and backward-compatible imports.
+    """
 
     key: str
     display_name: str
-    # Role → Sentinel-like band_key (aligned with spectral_index_definitions).
+    # Role → Sentinel-2 band_key (default / catalog-aligned).
     required_bands: Mapping[str, str]
-    # Argument order expected by ``formula`` (roles from required_bands).
+    # Argument order expected by ``formula`` (spectral roles).
     formula_roles: Sequence[str]
     formula: FormulaFn
 
@@ -193,9 +206,11 @@ class LocalIndexComputeService:
         if scene is None:
             raise SceneNotFoundError(str(scene_id))
 
+        sensor = self._detect_scene_sensor(scene)
         bands_by_key = {band.band_key: band for band in scene.bands}
         role_bands: dict[str, RasterBand] = {}
-        for role, band_key in spec.required_bands.items():
+        for role in spec.formula_roles:
+            band_key = resolve_band_key(sensor, role)
             role_bands[role] = self._require_band(scene_id, bands_by_key, band_key)
 
         role_arrays: dict[str, RasterArray] = {
@@ -216,6 +231,15 @@ class LocalIndexComputeService:
             stats=stats,
             reference=reference,
         )
+
+    @staticmethod
+    def _detect_scene_sensor(scene: Any) -> str:
+        """Resolve sensor from scene ``source`` / ``metadata`` (Fase 8B)."""
+        source = getattr(scene, "source", None)
+        metadata = getattr(scene, "metadata_", None)
+        if metadata is None:
+            metadata = getattr(scene, "metadata", None)
+        return detect_sensor(source=source, metadata=metadata)
 
     @staticmethod
     def _derived_asset_path(scene_id: UUID, index_key: str) -> str:

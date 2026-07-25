@@ -55,8 +55,13 @@ def _band(band_key: str, asset_path: Path):
     )
 
 
-def _scene(*, bands: list):
-    return SimpleNamespace(id=uuid4(), bands=bands)
+def _scene(*, bands: list, source: str = "local", metadata=None):
+    return SimpleNamespace(
+        id=uuid4(),
+        bands=bands,
+        source=source,
+        metadata_=metadata,
+    )
 
 
 class _FakeRepository:
