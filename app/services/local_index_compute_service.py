@@ -6,6 +6,8 @@ thin wrapper over the same path.
 
 Fase 7D: optional persistence of the computed float32 array as a derived
 GeoTIFF under DATA_ROOT (CRS/transform preserved; nodata = -9999).
+
+PNG previews of derived GeoTIFFs live in IndexPreviewService (Fase 7E).
 """
 
 from __future__ import annotations

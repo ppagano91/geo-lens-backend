@@ -9,9 +9,11 @@ from app.schemas.band import BandRead
 from app.schemas.index_compute import (
     IndexComputeResult,
     IndexComputeSaveResult,
+    IndexPreviewResult,
     NdviComputeResult,
 )
 from app.schemas.scene import SceneCreate, SceneListItem, SceneRead
+from app.services.index_preview_service import IndexPreviewService, PreviewWriteError
 from app.services.local_index_compute_service import (
     IncompatibleRasterBandsError,
     LocalIndexComputeService,
@@ -59,7 +61,7 @@ def _raise_index_compute_http(exc: Exception, *, scene_id: UUID) -> NoReturn:
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc),
         ) from exc
-    if isinstance(exc, (RasterPathError, RasterReadError, RasterWriteError)):
+    if isinstance(exc, (RasterPathError, RasterReadError, RasterWriteError, PreviewWriteError)):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(exc),
@@ -190,6 +192,28 @@ def compute_and_save_scene_index(
         RasterPathError,
         RasterReadError,
         RasterWriteError,
+    ) as exc:
+        _raise_index_compute_http(exc, scene_id=scene_id)
+
+
+@router.post(
+    "/{scene_id}/indices/{index_key}/preview",
+    response_model=IndexPreviewResult,
+)
+def create_scene_index_preview(
+    scene_id: UUID,
+    index_key: str,
+) -> IndexPreviewResult:
+    """Generate a PNG preview from an existing derived index GeoTIFF."""
+    service = IndexPreviewService()
+    try:
+        return service.create_preview(scene_id, index_key)
+    except (
+        UnsupportedIndexError,
+        RasterFileNotFoundError,
+        RasterPathError,
+        RasterReadError,
+        PreviewWriteError,
     ) as exc:
         _raise_index_compute_http(exc, scene_id=scene_id)
 
