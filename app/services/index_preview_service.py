@@ -2,6 +2,7 @@
 
 Fase 7E: create PNG from float32 GeoTIFF under DATA_ROOT/derived/scenes/.
 Fase 7E.1: resolve an existing PNG for HTTP serving (no regeneration).
+Fase 8C: resolve existing GeoTIFF / PNG for attachment download.
 
 Does not recompute indices, touch the DB, or modify compute / compute-and-save.
 """
@@ -47,6 +48,20 @@ class PreviewPngNotFoundError(Exception):
             f"Preview PNG not found for scene {scene_id} index '{index_key}' "
             f"at '{asset_path}'. Generate it first with "
             f"POST /api/v1/scenes/{scene_id}/indices/{index_key}/preview"
+        )
+
+
+class DerivedGeotiffNotFoundError(Exception):
+    """Derived index GeoTIFF is missing; POST .../compute-and-save must run first."""
+
+    def __init__(self, scene_id: UUID, index_key: str, asset_path: str) -> None:
+        self.scene_id = scene_id
+        self.index_key = index_key
+        self.asset_path = asset_path
+        super().__init__(
+            f"Derived GeoTIFF not found for scene {scene_id} index '{index_key}' "
+            f"at '{asset_path}'. Generate it first with "
+            f"POST /api/v1/scenes/{scene_id}/indices/{index_key}/compute-and-save"
         )
 
 
@@ -108,6 +123,23 @@ class IndexPreviewService:
             raise PreviewPngNotFoundError(scene_id, spec.key, asset_path)
         return path
 
+    def resolve_derived_geotiff(self, scene_id: UUID, index_key: str) -> Path:
+        """Return the absolute path of an existing derived index GeoTIFF.
+
+        Does not compute or overwrite. Raises if the index is unsupported
+        or the GeoTIFF is missing.
+        """
+        normalized_key = index_key.strip().lower()
+        spec = LOCAL_INDEX_REGISTRY.get(normalized_key)
+        if spec is None:
+            raise UnsupportedIndexError(normalized_key)
+
+        asset_path = self._derived_tif_path(scene_id, spec.key)
+        path = resolve_asset_path(asset_path, self.data_root)
+        if not path.is_file():
+            raise DerivedGeotiffNotFoundError(scene_id, spec.key, asset_path)
+        return path
+
     @staticmethod
     def _derived_tif_path(scene_id: UUID, index_key: str) -> str:
         return f"derived/scenes/{scene_id}/{index_key}.tif"
@@ -119,6 +151,7 @@ class IndexPreviewService:
 
 __all__ = [
     "IndexPreviewService",
+    "DerivedGeotiffNotFoundError",
     "PreviewPngNotFoundError",
     "PreviewWriteError",
     "UnsupportedIndexError",

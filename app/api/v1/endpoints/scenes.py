@@ -15,6 +15,7 @@ from app.schemas.index_compute import (
 )
 from app.schemas.scene import SceneCreate, SceneListItem, SceneRead
 from app.services.index_preview_service import (
+    DerivedGeotiffNotFoundError,
     IndexPreviewService,
     PreviewPngNotFoundError,
     PreviewWriteError,
@@ -66,7 +67,7 @@ def _raise_index_compute_http(exc: Exception, *, scene_id: UUID) -> NoReturn:
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc),
         ) from exc
-    if isinstance(exc, PreviewPngNotFoundError):
+    if isinstance(exc, (PreviewPngNotFoundError, DerivedGeotiffNotFoundError)):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc),
@@ -259,6 +260,76 @@ def get_scene_index_preview_png(
         media_type="image/png",
         filename=f"{index_key.strip().lower()}.png",
         content_disposition_type="inline",
+    )
+
+
+@router.get(
+    "/{scene_id}/indices/{index_key}/download.tif",
+    response_class=FileResponse,
+    responses={
+        200: {
+            "content": {"image/tiff": {}},
+            "description": "Existing derived index GeoTIFF (attachment)",
+        },
+        404: {"description": "Unsupported index or derived GeoTIFF missing"},
+    },
+)
+def download_scene_index_geotiff(
+    scene_id: UUID,
+    index_key: str,
+) -> FileResponse:
+    """Download an existing derived index GeoTIFF (does not recompute)."""
+    service = IndexPreviewService()
+    normalized_key = index_key.strip().lower()
+    try:
+        path = service.resolve_derived_geotiff(scene_id, index_key)
+    except (
+        UnsupportedIndexError,
+        DerivedGeotiffNotFoundError,
+        RasterPathError,
+    ) as exc:
+        _raise_index_compute_http(exc, scene_id=scene_id)
+
+    return FileResponse(
+        path,
+        media_type="image/tiff",
+        filename=f"{scene_id}_{normalized_key}.tif",
+        content_disposition_type="attachment",
+    )
+
+
+@router.get(
+    "/{scene_id}/indices/{index_key}/download.png",
+    response_class=FileResponse,
+    responses={
+        200: {
+            "content": {"image/png": {}},
+            "description": "Existing index preview PNG (attachment)",
+        },
+        404: {"description": "Unsupported index or preview PNG missing"},
+    },
+)
+def download_scene_index_png(
+    scene_id: UUID,
+    index_key: str,
+) -> FileResponse:
+    """Download an existing index preview PNG (does not regenerate)."""
+    service = IndexPreviewService()
+    normalized_key = index_key.strip().lower()
+    try:
+        path = service.resolve_preview_png(scene_id, index_key)
+    except (
+        UnsupportedIndexError,
+        PreviewPngNotFoundError,
+        RasterPathError,
+    ) as exc:
+        _raise_index_compute_http(exc, scene_id=scene_id)
+
+    return FileResponse(
+        path,
+        media_type="image/png",
+        filename=f"{scene_id}_{normalized_key}.png",
+        content_disposition_type="attachment",
     )
 
 
