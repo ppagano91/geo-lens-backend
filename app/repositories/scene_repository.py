@@ -27,6 +27,17 @@ class SceneRepository:
         )
         return self.db.scalars(stmt).unique().one_or_none()
 
+    def find_by_ingest_scene_path(self, scene_path: str) -> RasterScene | None:
+        """Return a scene previously ingested from the same relative DATA_ROOT path."""
+        normalized = scene_path.strip().replace("\\", "/")
+        stmt = (
+            select(RasterScene)
+            .where(RasterScene.metadata_["ingest_scene_path"].as_string() == normalized)
+            .options(joinedload(RasterScene.bands))
+            .limit(1)
+        )
+        return self.db.scalars(stmt).unique().one_or_none()
+
     def list(self, limit: int, offset: int) -> list[RasterScene]:
         stmt = (
             select(RasterScene)

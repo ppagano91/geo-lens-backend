@@ -4,6 +4,7 @@ from app.api.v1.endpoints import (
     aois,
     health,
     indices,
+    ingest,
     raster_bands,
     scenes,
     spatial_coverage,
@@ -14,6 +15,7 @@ api_router.include_router(health.router, tags=["health"])
 api_router.include_router(aois.router, prefix="/aois", tags=["aois"])
 api_router.include_router(scenes.router, prefix="/scenes", tags=["scenes"])
 api_router.include_router(indices.router, prefix="/indices", tags=["indices"])
+api_router.include_router(ingest.router, prefix="/ingest", tags=["ingest"])
 api_router.include_router(
     spatial_coverage.router,
     prefix="/spatial-coverage",
