@@ -39,6 +39,7 @@ from app.schemas.band import BandCreate
 from app.schemas.ingest import (
     AvailableIndexInfo,
     IngestedBandInfo,
+    IngestionWarning,
     LocalSceneIngestRequest,
     LocalSceneIngestResult,
 )
@@ -120,7 +121,7 @@ class LocalSceneIngestService:
         )
 
     def ingest(self, payload: LocalSceneIngestRequest) -> LocalSceneIngestResult:
-        warnings: list[str] = []
+        warnings: list[IngestionWarning] = []
         relative_scene_path = self._normalize_relative_path(payload.scene_path)
         scene_dir = self._resolve_scene_dir(relative_scene_path)
 
@@ -161,7 +162,15 @@ class LocalSceneIngestService:
             self.scene_service.delete(existing.id)
             overwritten = True
             warnings.append(
-                f"Overwrote existing scene {existing.id} for path '{relative_scene_path}'"
+                IngestionWarning(
+                    code="scene_overwritten",
+                    title="Escena sobrescrita",
+                    description=(
+                        f"Se reemplazó la escena existente {existing.id} "
+                        f"para la ruta '{relative_scene_path}'."
+                    ),
+                    severity="info",
+                )
             )
 
         acquisition_date = self._resolve_acquisition_date(
@@ -298,26 +307,41 @@ class LocalSceneIngestService:
         return nested
 
     def _load_mtl(
-        self, scene_dir: Path, warnings: list[str]
+        self, scene_dir: Path, warnings: list[IngestionWarning]
     ) -> tuple[Optional[MtlMetadata], Optional[Path]]:
         mtl_path = find_mtl_file(scene_dir)
         if mtl_path is None:
             warnings.append(
-                "No MTL.txt found; inferring acquisition date and product metadata "
-                "from GeoTIFF / folder name"
+                IngestionWarning(
+                    code="no_mtl_file",
+                    title="MTL no encontrado",
+                    description=(
+                        "No se encontró MTL.txt; se infieren la fecha de adquisición "
+                        "y metadatos del producto desde GeoTIFF / nombre de carpeta."
+                    ),
+                    severity="warning",
+                )
             )
             return None, None
         try:
             return parse_mtl_file(mtl_path), mtl_path
         except OSError as exc:
-            warnings.append(f"Failed to read MTL file {mtl_path.name}: {exc}")
+            warnings.append(
+                IngestionWarning(
+                    code="mtl_read_failed",
+                    title="Error al leer MTL",
+                    description=f"No se pudo leer el archivo MTL {mtl_path.name}: {exc}",
+                    items=[mtl_path.name],
+                    severity="warning",
+                )
+            )
             return None, mtl_path
 
     def _discover_bands(
         self,
         geotiffs: list[Path],
         relative_scene_path: str,
-        warnings: list[str],
+        warnings: list[IngestionWarning],
     ) -> dict[str, _DiscoveredBand]:
         discovered: dict[str, _DiscoveredBand] = {}
         unused: list[str] = []
@@ -334,8 +358,16 @@ class LocalSceneIngestService:
                 pass
             if band_key in discovered:
                 warnings.append(
-                    f"Duplicate band_key {band_key}: keeping {discovered[band_key].path.name}, "
-                    f"ignoring {path.name}"
+                    IngestionWarning(
+                        code="duplicate_band_key",
+                        title="Banda duplicada",
+                        description=(
+                            f"Clave de banda {band_key} duplicada: se mantiene "
+                            f"{discovered[band_key].path.name}."
+                        ),
+                        items=[path.name],
+                        severity="warning",
+                    )
                 )
                 continue
             discovered[band_key] = _DiscoveredBand(
@@ -345,7 +377,16 @@ class LocalSceneIngestService:
             )
         if unused:
             warnings.append(
-                "Ignored non-band GeoTIFF files: " + ", ".join(sorted(unused))
+                IngestionWarning(
+                    code="ignored_non_band_geotiffs",
+                    title="Archivos GeoTIFF ignorados",
+                    description=(
+                        "Se encontraron archivos GeoTIFF que no corresponden "
+                        "a bandas registrables."
+                    ),
+                    items=sorted(unused),
+                    severity="warning",
+                )
             )
         return discovered
 
@@ -372,7 +413,7 @@ class LocalSceneIngestService:
         source: str,
         mtl: Optional[MtlMetadata],
         discovered_keys: set[str],
-        warnings: list[str],
+        warnings: list[IngestionWarning],
     ) -> str:
         meta: dict[str, Any] = {}
         if mtl:
@@ -391,7 +432,15 @@ class LocalSceneIngestService:
             # Band-name heuristic.
             if discovered_keys & set(LANDSAT_8_BAND_MAP.values()):
                 warnings.append(
-                    "Sensor inferred as landsat-8 from SR_B* band filenames"
+                    IngestionWarning(
+                        code="sensor_inferred_from_bands",
+                        title="Sensor inferido",
+                        description=(
+                            "Sensor inferido como landsat-8 a partir de los "
+                            "nombres de archivo SR_B*."
+                        ),
+                        severity="info",
+                    )
                 )
                 return SENSOR_LANDSAT_8
         return detected
@@ -456,7 +505,7 @@ class LocalSceneIngestService:
         mtl: Optional[MtlMetadata],
         scene_dir: Path,
         sample_band: Path,
-        warnings: list[str],
+        warnings: list[IngestionWarning],
     ) -> date:
         if mtl and mtl.date_acquired:
             return mtl.date_acquired
@@ -467,7 +516,15 @@ class LocalSceneIngestService:
                 try:
                     parsed = datetime.strptime(match.group(1), "%Y%m%d").date()
                     warnings.append(
-                        f"Acquisition date inferred from name token {match.group(1)}"
+                        IngestionWarning(
+                            code="acquisition_date_from_name",
+                            title="Fecha de adquisición inferida",
+                            description=(
+                                f"Fecha de adquisición inferida del token de "
+                                f"nombre {match.group(1)}."
+                            ),
+                            severity="info",
+                        )
                     )
                     return parsed
                 except ValueError:
@@ -475,7 +532,16 @@ class LocalSceneIngestService:
 
         mtime = datetime.fromtimestamp(sample_band.stat().st_mtime, tz=timezone.utc)
         warnings.append(
-            f"Acquisition date unavailable; using band file mtime {mtime.date().isoformat()}"
+            IngestionWarning(
+                code="acquisition_date_from_mtime",
+                title="Fecha de adquisición por mtime",
+                description=(
+                    "Fecha de adquisición no disponible; se usa el mtime del "
+                    f"archivo de banda ({mtime.date().isoformat()})."
+                ),
+                items=[sample_band.name],
+                severity="warning",
+            )
         )
         return mtime.date()
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -55,6 +55,16 @@ class AvailableIndexInfo(BaseModel):
     missing_roles: list[str] = Field(default_factory=list)
 
 
+class IngestionWarning(BaseModel):
+    """Structured ingest warning for API clients."""
+
+    code: str
+    title: str
+    description: Optional[str] = None
+    items: list[str] = Field(default_factory=list)
+    severity: Literal["info", "warning", "error"] = "warning"
+
+
 class LocalSceneIngestResult(BaseModel):
     scene_id: UUID
     name: str
@@ -63,7 +73,7 @@ class LocalSceneIngestResult(BaseModel):
     acquisition_date: date
     scene_path: str
     bands: list[IngestedBandInfo]
-    warnings: list[str] = Field(default_factory=list)
+    warnings: list[IngestionWarning] = Field(default_factory=list)
     available_indices: list[AvailableIndexInfo] = Field(default_factory=list)
     metadata: Optional[dict[str, Any]] = None
     overwritten: bool = False
@@ -73,5 +83,6 @@ __all__ = [
     "LocalSceneIngestRequest",
     "IngestedBandInfo",
     "AvailableIndexInfo",
+    "IngestionWarning",
     "LocalSceneIngestResult",
 ]

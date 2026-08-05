@@ -268,5 +268,40 @@ def test_ingest_without_mtl_still_works(client, tmp_path: Path, monkeypatch) -> 
     body = response.json()
     assert body["source"] == "landsat-8"
     assert body["metadata"]["platform"] == "Landsat-8"
-    assert any("No MTL.txt" in w for w in body["warnings"])
+    assert any(w["code"] == "no_mtl_file" for w in body["warnings"])
     assert body["acquisition_date"] == "2026-05-10"  # from folder name token
+
+
+@requires_database
+def test_ingest_ignores_non_band_geotiffs_as_structured_warning(
+    client, tmp_path: Path, monkeypatch
+) -> None:
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    monkeypatch.setattr(settings, "data_root", str(data_root))
+    scene_path = _stage_landsat_scene(data_root)
+    scene_dir = data_root / scene_path
+    unused_names = [
+        "LC08_L2SP_225084_20260510_02_T1_QA_PIXEL.TIF",
+        "LC08_L2SP_225084_20260510_02_T1_SR_QA_AEROSOL.TIF",
+    ]
+    for name in unused_names:
+        _write_band(scene_dir / name, np.full((4, 4), 1, dtype=np.uint16))
+
+    response = client.post(
+        "/api/v1/ingest/local-scene",
+        json={"scene_path": scene_path, "source": "landsat-8"},
+    )
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    ignored = next(
+        (w for w in body["warnings"] if w["code"] == "ignored_non_band_geotiffs"),
+        None,
+    )
+    assert ignored is not None
+    assert ignored["title"] == "Archivos GeoTIFF ignorados"
+    assert ignored["severity"] == "warning"
+    assert isinstance(ignored["description"], str) and ignored["description"]
+    assert ignored["items"] == sorted(unused_names)
+    assert all(isinstance(w, dict) and "code" in w for w in body["warnings"])
