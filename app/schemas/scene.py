@@ -30,6 +30,8 @@ class SceneListItem(BaseModel):
     cloud_cover: Optional[Decimal]
     footprint: dict[str, Any]
     metadata: Optional[dict[str, Any]]
+    is_active: bool = True
+    deleted_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
 

@@ -101,10 +101,16 @@ def create_scene(payload: SceneCreate, db: Session = Depends(get_db)) -> SceneRe
 def list_scenes(
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
+    include_inactive: bool = Query(
+        default=False,
+        description="If true, include logically deactivated scenes",
+    ),
     db: Session = Depends(get_db),
 ) -> list[SceneListItem]:
     service = SceneService(db)
-    return service.list(limit=limit, offset=offset)
+    return service.list(
+        limit=limit, offset=offset, include_inactive=include_inactive
+    )
 
 
 @router.get("/{scene_id}", response_model=SceneRead)

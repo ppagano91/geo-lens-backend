@@ -90,3 +90,17 @@ def test_delete_aoi(client) -> None:
 
     get_response = client.get(f"/api/v1/aois/{aoi_id}")
     assert get_response.status_code == 404
+
+    list_response = client.get("/api/v1/aois")
+    assert list_response.status_code == 200
+    assert all(item["id"] != aoi_id for item in list_response.json())
+
+    inactive_list = client.get("/api/v1/aois?include_inactive=true")
+    assert inactive_list.status_code == 200
+    deactivated = next(item for item in inactive_list.json() if item["id"] == aoi_id)
+    assert deactivated["is_active"] is False
+    assert deactivated["deleted_at"] is not None
+
+    # Idempotent soft-delete
+    second_delete = client.delete(f"/api/v1/aois/{aoi_id}")
+    assert second_delete.status_code == 204

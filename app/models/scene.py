@@ -5,7 +5,7 @@ from datetime import date, datetime
 from typing import TYPE_CHECKING, Optional
 
 from geoalchemy2 import Geometry
-from sqlalchemy import Date, DateTime, Index, Numeric, String, func
+from sqlalchemy import Boolean, Date, DateTime, Index, Numeric, String, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -39,6 +39,16 @@ class RasterScene(Base):
         nullable=False,
     )
     metadata_: Mapped[Optional[dict]] = mapped_column("metadata", JSONB, nullable=True)
+    is_active: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default="true",
+    )
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -61,4 +71,5 @@ class RasterScene(Base):
         Index("ix_raster_scenes_footprint", "footprint", postgresql_using="gist"),
         Index("ix_raster_scenes_acquisition_date", "acquisition_date"),
         Index("ix_raster_scenes_source", "source"),
+        Index("ix_raster_scenes_is_active", "is_active"),
     )

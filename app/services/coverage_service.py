@@ -33,9 +33,11 @@ class SpatialCoverageService:
         self.db = db
 
     def evaluate(self, aoi_id: UUID, scene_id: UUID) -> SpatialCoverageRead:
-        if self.db.get(Aoi, aoi_id) is None:
+        aoi = self.db.get(Aoi, aoi_id)
+        if aoi is None or not aoi.is_active:
             raise AoiNotFoundError(str(aoi_id))
-        if self.db.get(RasterScene, scene_id) is None:
+        scene = self.db.get(RasterScene, scene_id)
+        if scene is None or not scene.is_active:
             raise SceneNotFoundError(str(scene_id))
 
         row = self.db.execute(
@@ -60,6 +62,8 @@ class SpatialCoverageService:
                 CROSS JOIN raster_scenes AS s
                 WHERE a.id = :aoi_id
                   AND s.id = :scene_id
+                  AND a.is_active IS TRUE
+                  AND s.is_active IS TRUE
                 """
             ),
             {"aoi_id": aoi_id, "scene_id": scene_id, "srid": _AREA_SRID},

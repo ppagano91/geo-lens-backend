@@ -44,28 +44,36 @@ class SceneService:
         created = self.repository.create(scene)
         return self._to_read(created)
 
-    def list(self, limit: int, offset: int) -> list[SceneListItem]:
-        scenes = self.repository.list(limit=limit, offset=offset)
+    def list(
+        self, limit: int, offset: int, *, include_inactive: bool = False
+    ) -> list[SceneListItem]:
+        scenes = self.repository.list(
+            limit=limit, offset=offset, include_inactive=include_inactive
+        )
         return [self._to_list_item(scene) for scene in scenes]
 
     def get(self, scene_id: UUID) -> SceneRead:
         scene = self.repository.get_by_id(scene_id)
-        if scene is None:
+        if scene is None or not scene.is_active:
             raise SceneNotFoundError(str(scene_id))
         return self._to_read(scene)
 
     def list_bands(self, scene_id: UUID) -> list[BandRead]:
         scene = self.repository.get_by_id(scene_id)
-        if scene is None:
+        if scene is None or not scene.is_active:
             raise SceneNotFoundError(str(scene_id))
         bands = self.repository.list_bands(scene_id)
         return [self._band_to_read(band) for band in bands]
 
     def delete(self, scene_id: UUID) -> None:
+        """Logically deactivate a scene. Does not remove bands or files.
+
+        Idempotent if the scene is already inactive.
+        """
         scene = self.repository.get_by_id(scene_id)
         if scene is None:
             raise SceneNotFoundError(str(scene_id))
-        self.repository.delete(scene)
+        self.repository.soft_delete(scene)
 
     @staticmethod
     def _validate_unique_band_keys(bands: list[BandCreate]) -> None:
@@ -111,6 +119,8 @@ class SceneService:
             cloud_cover=scene.cloud_cover,
             footprint=db_element_to_geojson(scene.footprint),
             metadata=scene.metadata_,
+            is_active=scene.is_active,
+            deleted_at=scene.deleted_at,
             created_at=scene.created_at,
             updated_at=scene.updated_at,
         )

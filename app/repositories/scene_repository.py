@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from uuid import UUID
 
 from sqlalchemy import select
@@ -28,23 +29,27 @@ class SceneRepository:
         return self.db.scalars(stmt).unique().one_or_none()
 
     def find_by_ingest_scene_path(self, scene_path: str) -> RasterScene | None:
-        """Return a scene previously ingested from the same relative DATA_ROOT path."""
+        """Return an active scene previously ingested from the same relative path."""
         normalized = scene_path.strip().replace("\\", "/")
         stmt = (
             select(RasterScene)
             .where(RasterScene.metadata_["ingest_scene_path"].as_string() == normalized)
+            .where(RasterScene.is_active.is_(True))
             .options(joinedload(RasterScene.bands))
             .limit(1)
         )
         return self.db.scalars(stmt).unique().one_or_none()
 
-    def list(self, limit: int, offset: int) -> list[RasterScene]:
-        stmt = (
-            select(RasterScene)
-            .order_by(RasterScene.acquisition_date.desc(), RasterScene.created_at.desc())
-            .limit(limit)
-            .offset(offset)
-        )
+    def list(
+        self, limit: int, offset: int, *, include_inactive: bool = False
+    ) -> list[RasterScene]:
+        stmt = select(RasterScene)
+        if not include_inactive:
+            stmt = stmt.where(RasterScene.is_active.is_(True))
+        stmt = stmt.order_by(
+            RasterScene.acquisition_date.desc(),
+            RasterScene.created_at.desc(),
+        ).limit(limit).offset(offset)
         return list(self.db.scalars(stmt).all())
 
     def list_bands(self, scene_id: UUID) -> list[RasterBand]:
@@ -55,6 +60,12 @@ class SceneRepository:
         )
         return list(self.db.scalars(stmt).all())
 
-    def delete(self, scene: RasterScene) -> None:
-        self.db.delete(scene)
-        self.db.commit()
+    def soft_delete(self, scene: RasterScene) -> RasterScene:
+        """Deactivate a scene without removing bands or files."""
+        if scene.is_active:
+            scene.is_active = False
+            scene.deleted_at = datetime.now(timezone.utc)
+            self.db.add(scene)
+            self.db.commit()
+            self.db.refresh(scene)
+        return scene

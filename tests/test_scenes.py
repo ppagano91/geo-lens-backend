@@ -111,15 +111,44 @@ def test_list_scene_bands(client) -> None:
 
 
 @requires_database
-def test_delete_scene(client) -> None:
+def test_delete_scene(client, db_session) -> None:
     create_response = client.post("/api/v1/scenes", json=_sample_scene_payload())
     scene_id = create_response.json()["id"]
+    band_ids = {band["id"] for band in create_response.json()["bands"]}
 
     delete_response = client.delete(f"/api/v1/scenes/{scene_id}")
     assert delete_response.status_code == 204
 
     get_response = client.get(f"/api/v1/scenes/{scene_id}")
     assert get_response.status_code == 404
+
+    list_response = client.get("/api/v1/scenes")
+    assert list_response.status_code == 200
+    assert all(item["id"] != scene_id for item in list_response.json())
+
+    inactive_list = client.get("/api/v1/scenes?include_inactive=true")
+    assert inactive_list.status_code == 200
+    deactivated = next(
+        item for item in inactive_list.json() if item["id"] == scene_id
+    )
+    assert deactivated["is_active"] is False
+    assert deactivated["deleted_at"] is not None
+
+    # Soft-delete must keep associated bands in the database.
+    from uuid import UUID
+
+    from app.models.band import RasterBand
+
+    db_session.expire_all()
+    remaining = (
+        db_session.query(RasterBand)
+        .filter(RasterBand.scene_id == UUID(scene_id))
+        .all()
+    )
+    assert {str(band.id) for band in remaining} == band_ids
+
+    second_delete = client.delete(f"/api/v1/scenes/{scene_id}")
+    assert second_delete.status_code == 204
 
 
 @requires_database

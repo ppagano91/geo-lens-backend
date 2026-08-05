@@ -203,7 +203,7 @@ class LocalIndexComputeService:
             raise UnsupportedIndexError(normalized_key)
 
         scene = self.repository.get_by_id(scene_id)
-        if scene is None:
+        if scene is None or not scene.is_active:
             raise SceneNotFoundError(str(scene_id))
 
         sensor = self._detect_scene_sensor(scene)

@@ -22,6 +22,8 @@ class AoiRead(BaseModel):
     description: Optional[str]
     geometry: dict[str, Any]
     properties: Optional[dict[str, Any]]
+    is_active: bool = True
+    deleted_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
 

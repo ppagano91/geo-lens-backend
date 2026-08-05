@@ -32,21 +32,26 @@ class AoiService:
         created = self.repository.create(aoi)
         return self._to_read(created)
 
-    def list(self, limit: int, offset: int) -> list[AoiRead]:
-        aois = self.repository.list(limit=limit, offset=offset)
+    def list(
+        self, limit: int, offset: int, *, include_inactive: bool = False
+    ) -> list[AoiRead]:
+        aois = self.repository.list(
+            limit=limit, offset=offset, include_inactive=include_inactive
+        )
         return [self._to_read(aoi) for aoi in aois]
 
     def get(self, aoi_id: UUID) -> AoiRead:
         aoi = self.repository.get_by_id(aoi_id)
-        if aoi is None:
+        if aoi is None or not aoi.is_active:
             raise AoiNotFoundError(str(aoi_id))
         return self._to_read(aoi)
 
     def delete(self, aoi_id: UUID) -> None:
+        """Logically deactivate an AOI. Idempotent if already inactive."""
         aoi = self.repository.get_by_id(aoi_id)
         if aoi is None:
             raise AoiNotFoundError(str(aoi_id))
-        self.repository.delete(aoi)
+        self.repository.soft_delete(aoi)
 
     @staticmethod
     def _to_read(aoi: Aoi) -> AoiRead:
@@ -56,6 +61,8 @@ class AoiService:
             description=aoi.description,
             geometry=db_element_to_geojson(aoi.geom),
             properties=aoi.properties,
+            is_active=aoi.is_active,
+            deleted_at=aoi.deleted_at,
             created_at=aoi.created_at,
             updated_at=aoi.updated_at,
         )
