@@ -91,5 +91,36 @@ class IndexPreviewResult(BaseModel):
     height: int
 
 
+class IndexMapOverlayBounds(BaseModel):
+    """Raster bounds in the original CRS (rasterio order)."""
+
+    left: float
+    bottom: float
+    right: float
+    top: float
+
+
+class IndexMapOverlayResult(BaseModel):
+    """Metadata to paint a derived index PNG as a MapLibre image overlay (Fase 9E)."""
+
+    scene_id: UUID
+    index_key: str
+    image_url: str = Field(
+        description="API path of the existing preview PNG (relative to API host)"
+    )
+    width: int
+    height: int
+    crs_original: str
+    bounds_original: IndexMapOverlayBounds
+    coordinates_wgs84: list[list[float]] = Field(
+        description=(
+            "Four [lng, lat] corners in MapLibre image-source order: "
+            "top-left, top-right, bottom-right, bottom-left"
+        ),
+        min_length=4,
+        max_length=4,
+    )
+
+
 # Backward-compatible alias for Fase 7B callers / OpenAPI.
 NdviComputeResult = IndexComputeResult

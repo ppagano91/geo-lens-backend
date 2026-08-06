@@ -10,10 +10,15 @@ from app.schemas.band import BandRead
 from app.schemas.index_compute import (
     IndexComputeResult,
     IndexComputeSaveResult,
+    IndexMapOverlayResult,
     IndexPreviewResult,
     NdviComputeResult,
 )
 from app.schemas.scene import SceneCreate, SceneListItem, SceneRead
+from app.services.index_map_overlay_service import (
+    IndexMapOverlayError,
+    IndexMapOverlayService,
+)
 from app.services.index_preview_service import (
     DerivedGeotiffNotFoundError,
     IndexPreviewService,
@@ -70,6 +75,11 @@ def _raise_index_compute_http(exc: Exception, *, scene_id: UUID) -> NoReturn:
     if isinstance(exc, (PreviewPngNotFoundError, DerivedGeotiffNotFoundError)):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    if isinstance(exc, IndexMapOverlayError):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(exc),
         ) from exc
     if isinstance(exc, (RasterPathError, RasterReadError, RasterWriteError, PreviewWriteError)):
@@ -267,6 +277,34 @@ def get_scene_index_preview_png(
         filename=f"{index_key.strip().lower()}.png",
         content_disposition_type="inline",
     )
+
+
+@router.get(
+    "/{scene_id}/indices/{index_key}/map-overlay",
+    response_model=IndexMapOverlayResult,
+)
+def get_scene_index_map_overlay(
+    scene_id: UUID,
+    index_key: str,
+) -> IndexMapOverlayResult:
+    """Return MapLibre image-overlay metadata for a derived index PNG.
+
+    Reads CRS/bounds from the existing GeoTIFF and points ``image_url`` at the
+    existing preview PNG. Does not generate tiles or missing assets.
+    """
+    service = IndexMapOverlayService()
+    try:
+        return service.get_map_overlay(scene_id, index_key)
+    except (
+        UnsupportedIndexError,
+        DerivedGeotiffNotFoundError,
+        PreviewPngNotFoundError,
+        RasterFileNotFoundError,
+        RasterPathError,
+        RasterReadError,
+        IndexMapOverlayError,
+    ) as exc:
+        _raise_index_compute_http(exc, scene_id=scene_id)
 
 
 @router.get(
