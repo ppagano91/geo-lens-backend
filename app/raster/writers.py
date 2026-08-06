@@ -9,7 +9,7 @@ import rasterio
 from rasterio.errors import RasterioIOError
 from rasterio.transform import Affine
 
-from app.raster.readers import resolve_asset_path
+from app.services.asset_storage_service import AssetStorageService
 
 # Sentinel used for derived spectral-index GeoTIFFs (NaN → this value on write).
 DEFAULT_INDEX_NODATA = -9999.0
@@ -30,12 +30,12 @@ def write_float32_geotiff(
 ) -> Path:
     """Write a single-band float32 GeoTIFF under DATA_ROOT.
 
-    - Relative ``asset_path`` values are resolved against ``data_root``.
+    - Relative ``asset_path`` values are resolved via :class:`AssetStorageService`.
     - Parent directories are created when missing.
     - Existing files are overwritten (rasterio ``"w"``).
     - NaN pixels are replaced with ``nodata`` before writing.
     """
-    path = resolve_asset_path(asset_path, data_root)
+    path = AssetStorageService(data_root).resolve_write_path(asset_path)
     array = np.asarray(data, dtype=np.float32)
     if array.ndim != 2:
         raise RasterWriteError(

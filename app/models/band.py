@@ -33,6 +33,7 @@ class RasterBand(Base):
     band_name: Mapped[str] = mapped_column(String(100), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     resolution: Mapped[Optional[float]] = mapped_column(Numeric, nullable=True)
+    # Relative reference under DATA_ROOT (via AssetStorageService); never file bytes.
     asset_path: Mapped[str] = mapped_column(Text, nullable=False)
     nodata: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     dtype: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)

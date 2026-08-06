@@ -14,7 +14,8 @@ class Settings(BaseSettings):
         "postgresql+psycopg://geochange:geochange@localhost:5432/geochange"
     )
     cors_origins: str = "http://localhost:5173"
-    # Relative paths in raster_bands.asset_path resolve against this root.
+    # Relative paths in raster_bands.asset_path resolve against this root
+    # via AssetStorageService (local filesystem storage for now).
     data_root: str = "../data"
 
     @field_validator("cors_origins", mode="before")

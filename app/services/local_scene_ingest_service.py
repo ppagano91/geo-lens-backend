@@ -17,7 +17,6 @@ from typing import Any, Optional
 from rasterio.warp import transform_bounds
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
 from app.raster.mtl import MtlMetadata, find_mtl_file, parse_mtl_file
 from app.raster.readers import (
     RasterFileNotFoundError,
@@ -25,7 +24,6 @@ from app.raster.readers import (
     RasterPathError,
     RasterReadError,
     read_raster_metadata,
-    resolve_asset_path,
 )
 from app.raster.sensors import (
     LANDSAT_8_BAND_MAP,
@@ -44,6 +42,7 @@ from app.schemas.ingest import (
     LocalSceneIngestResult,
 )
 from app.schemas.scene import SceneCreate
+from app.services.asset_storage_service import AssetStorageError, AssetStorageService
 from app.services.local_index_compute_service import LOCAL_INDEX_REGISTRY
 from app.services.scene_service import SceneService
 
@@ -114,11 +113,15 @@ class LocalSceneIngestService:
         self.db = db
         self.repository = SceneRepository(db)
         self.scene_service = SceneService(db)
-        self.data_root = (
-            Path(data_root).expanduser().resolve()
-            if data_root is not None
-            else settings.data_root_path
-        )
+        self._storage = AssetStorageService(data_root)
+
+    @property
+    def data_root(self) -> Path:
+        return self._storage.data_root
+
+    @data_root.setter
+    def data_root(self, value: Path | str) -> None:
+        self._storage = AssetStorageService(value)
 
     def ingest(self, payload: LocalSceneIngestRequest) -> LocalSceneIngestResult:
         warnings: list[IngestionWarning] = []
@@ -252,27 +255,17 @@ class LocalSceneIngestService:
         )
 
     def _normalize_relative_path(self, scene_path: str) -> str:
-        raw = (scene_path or "").strip().replace("\\", "/")
-        if not raw:
-            raise LocalIngestError("scene_path is empty")
-        if Path(raw).is_absolute():
-            raise LocalIngestError(
-                "scene_path must be relative to DATA_ROOT (absolute paths are not allowed)",
-                status_code=422,
-            )
-        # Reject traversal segments before resolve.
-        parts = [p for p in Path(raw).parts if p not in ("", ".")]
-        if any(p == ".." for p in parts):
-            raise LocalIngestError(
-                f"scene_path escapes DATA_ROOT: {scene_path}",
-                status_code=422,
-            )
-        return Path(*parts).as_posix() if parts else ""
+        try:
+            return self._storage.validate_relative_asset_path(scene_path)
+        except AssetStorageError as exc:
+            # Surface scene_path wording for ingest API clarity.
+            message = str(exc).replace("asset_path", "scene_path")
+            raise LocalIngestError(message, status_code=422) from exc
 
     def _resolve_scene_dir(self, relative_scene_path: str) -> Path:
         try:
-            resolved = resolve_asset_path(relative_scene_path, self.data_root)
-        except RasterPathError as exc:
+            resolved = self._storage.resolve_read_path(relative_scene_path)
+        except (AssetStorageError, RasterPathError) as exc:
             raise LocalIngestError(str(exc), status_code=422) from exc
 
         if not resolved.exists():

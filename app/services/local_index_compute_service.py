@@ -17,13 +17,13 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
 import numpy as np
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
 from app.models.band import RasterBand
 from app.raster.formulas import (
     calculate_nbr,
@@ -57,6 +57,7 @@ from app.schemas.index_compute import (
     IndexStats,
     NdviComputeResult,
 )
+from app.services.asset_storage_service import AssetStorageService
 from app.services.scene_service import SceneNotFoundError
 
 # Sentinel-2 keys (default sensor; kept for Fase 7B imports / tests).
@@ -153,9 +154,22 @@ class IncompatibleRasterBandsError(Exception):
 class LocalIndexComputeService:
     """Orchestrate local band lookup, alignment checks, and index formulas."""
 
-    def __init__(self, db: Session) -> None:
+    def __init__(
+        self,
+        db: Session,
+        *,
+        data_root: Path | str | None = None,
+    ) -> None:
         self.repository = SceneRepository(db)
-        self.data_root = settings.data_root_path
+        self._storage = AssetStorageService(data_root)
+
+    @property
+    def data_root(self) -> Path:
+        return self._storage.data_root
+
+    @data_root.setter
+    def data_root(self, value: Path | str) -> None:
+        self._storage = AssetStorageService(value)
 
     def compute_ndvi(self, scene_id: UUID) -> NdviComputeResult:
         """Fase 7B compatibility wrapper around :meth:`compute_index`."""
@@ -172,7 +186,9 @@ class LocalIndexComputeService:
     ) -> IndexComputeSaveResult:
         """Compute an index and persist it as a float32 GeoTIFF under DATA_ROOT."""
         prepared = self._prepare_index(scene_id, index_key)
-        asset_path = self._derived_asset_path(scene_id, prepared.spec.key)
+        asset_path = self._storage.build_derived_asset_path(
+            scene_id, prepared.spec.key, "tif"
+        )
         resolved = write_float32_geotiff(
             asset_path,
             self.data_root,
@@ -240,10 +256,6 @@ class LocalIndexComputeService:
         if metadata is None:
             metadata = getattr(scene, "metadata", None)
         return detect_sensor(source=source, metadata=metadata)
-
-    @staticmethod
-    def _derived_asset_path(scene_id: UUID, index_key: str) -> str:
-        return f"derived/scenes/{scene_id}/{index_key}.tif"
 
     @staticmethod
     def _to_compute_result(

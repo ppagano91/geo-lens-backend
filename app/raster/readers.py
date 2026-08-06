@@ -12,6 +12,8 @@ import rasterio
 from rasterio.enums import Resampling
 from rasterio.errors import RasterioIOError
 
+from app.services.asset_storage_service import AssetStorageError, AssetStorageService
+
 
 def _ensure_rasterio_proj_data() -> None:
     """Prefer rasterio's bundled PROJ data over a conflicting system PROJ_LIB.
@@ -39,8 +41,8 @@ def _ensure_rasterio_proj_data() -> None:
 _ensure_rasterio_proj_data()
 
 
-class RasterPathError(Exception):
-    """Invalid or unsafe asset_path resolution."""
+# Alias so existing callers keep catching RasterPathError; storage raises AssetStorageError.
+RasterPathError = AssetStorageError
 
 
 class RasterFileNotFoundError(Exception):
@@ -96,29 +98,21 @@ class RasterArray:
 
 
 def resolve_asset_path(asset_path: str, data_root: Path | str) -> Path:
-    """Resolve asset_path against DATA_ROOT with basic traversal protection.
+    """Resolve asset_path against DATA_ROOT with traversal protection.
 
-    - Absolute paths are used as-is (resolved).
-    - Relative paths are joined to DATA_ROOT and must stay under DATA_ROOT.
+    Relative paths go through :class:`AssetStorageService` (canonical path).
+    Absolute paths are accepted as-is for backward-compatible unit tests;
+    application code should store and pass relative ``asset_path`` only.
     """
     raw = (asset_path or "").strip()
     if not raw:
         raise RasterPathError("asset_path is empty")
 
-    root = Path(data_root).expanduser().resolve()
     candidate = Path(raw).expanduser()
-
     if candidate.is_absolute():
         return candidate.resolve()
 
-    resolved = (root / candidate).resolve()
-    try:
-        resolved.relative_to(root)
-    except ValueError as exc:
-        raise RasterPathError(
-            f"asset_path escapes DATA_ROOT ({root}): {asset_path}"
-        ) from exc
-    return resolved
+    return AssetStorageService(data_root).resolve_read_path(raw)
 
 
 def read_raster_metadata(asset_path: str, data_root: Path | str) -> RasterMetadata:

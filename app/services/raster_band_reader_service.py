@@ -7,7 +7,6 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
 from app.models.band import RasterBand
 from app.raster.readers import (
     RasterFileNotFoundError,
@@ -21,6 +20,7 @@ from app.schemas.raster import (
     RasterMetadataRead,
     RasterSampleStatsRead,
 )
+from app.services.asset_storage_service import AssetStorageService
 
 
 class BandNotFoundError(Exception):
@@ -32,10 +32,11 @@ class RasterBandReaderService:
 
     def __init__(self, db: Session) -> None:
         self.db = db
+        self._storage = AssetStorageService()
 
     def get_metadata(self, band_id: UUID) -> RasterMetadataRead:
         band = self._get_band(band_id)
-        meta = read_raster_metadata(band.asset_path, settings.data_root_path)
+        meta = read_raster_metadata(band.asset_path, self._storage.data_root)
         bounds = (
             RasterBounds(**meta.bounds) if meta.bounds is not None else None
         )
@@ -66,7 +67,7 @@ class RasterBandReaderService:
         band = self._get_band(band_id)
         sample = read_raster_sample(
             band.asset_path,
-            settings.data_root_path,
+            self._storage.data_root,
             max_size=max_size,
         )
         return RasterSampleStatsRead(

@@ -12,7 +12,6 @@ from __future__ import annotations
 from pathlib import Path
 from uuid import UUID
 
-from app.core.config import settings
 from app.raster.preview import (
     PreviewWriteError,
     render_index_preview_rgba,
@@ -23,7 +22,6 @@ from app.raster.readers import (
     RasterPathError,
     RasterReadError,
     read_raster_array,
-    resolve_asset_path,
 )
 from app.raster.writers import DEFAULT_INDEX_NODATA
 from app.schemas.index_compute import (
@@ -31,6 +29,7 @@ from app.schemas.index_compute import (
     IndexPreviewOutputInfo,
     IndexPreviewResult,
 )
+from app.services.asset_storage_service import AssetStorageService
 from app.services.local_index_compute_service import (
     LOCAL_INDEX_REGISTRY,
     UnsupportedIndexError,
@@ -69,11 +68,15 @@ class IndexPreviewService:
     """Orchestrate derived GeoTIFF → RGBA PNG preview for a scene index."""
 
     def __init__(self, data_root: Path | str | None = None) -> None:
-        self.data_root = (
-            Path(data_root).expanduser().resolve()
-            if data_root is not None
-            else settings.data_root_path
-        )
+        self._storage = AssetStorageService(data_root)
+
+    @property
+    def data_root(self) -> Path:
+        return self._storage.data_root
+
+    @data_root.setter
+    def data_root(self, value: Path | str) -> None:
+        self._storage = AssetStorageService(value)
 
     def create_preview(self, scene_id: UUID, index_key: str) -> IndexPreviewResult:
         """Read a derived index GeoTIFF and write a colocated PNG preview."""
@@ -82,8 +85,12 @@ class IndexPreviewService:
         if spec is None:
             raise UnsupportedIndexError(normalized_key)
 
-        input_asset = self._derived_tif_path(scene_id, spec.key)
-        output_asset = self._derived_png_path(scene_id, spec.key)
+        input_asset = self._storage.build_derived_asset_path(
+            scene_id, spec.key, "tif"
+        )
+        output_asset = self._storage.build_derived_asset_path(
+            scene_id, spec.key, "png"
+        )
 
         raster = read_raster_array(input_asset, self.data_root)
         rgba = render_index_preview_rgba(
@@ -117,11 +124,12 @@ class IndexPreviewService:
         if spec is None:
             raise UnsupportedIndexError(normalized_key)
 
-        asset_path = self._derived_png_path(scene_id, spec.key)
-        path = resolve_asset_path(asset_path, self.data_root)
-        if not path.is_file():
+        asset_path = self._storage.build_derived_asset_path(
+            scene_id, spec.key, "png"
+        )
+        if not self._storage.exists(asset_path):
             raise PreviewPngNotFoundError(scene_id, spec.key, asset_path)
-        return path
+        return self._storage.resolve_read_path(asset_path)
 
     def resolve_derived_geotiff(self, scene_id: UUID, index_key: str) -> Path:
         """Return the absolute path of an existing derived index GeoTIFF.
@@ -134,19 +142,12 @@ class IndexPreviewService:
         if spec is None:
             raise UnsupportedIndexError(normalized_key)
 
-        asset_path = self._derived_tif_path(scene_id, spec.key)
-        path = resolve_asset_path(asset_path, self.data_root)
-        if not path.is_file():
+        asset_path = self._storage.build_derived_asset_path(
+            scene_id, spec.key, "tif"
+        )
+        if not self._storage.exists(asset_path):
             raise DerivedGeotiffNotFoundError(scene_id, spec.key, asset_path)
-        return path
-
-    @staticmethod
-    def _derived_tif_path(scene_id: UUID, index_key: str) -> str:
-        return f"derived/scenes/{scene_id}/{index_key}.tif"
-
-    @staticmethod
-    def _derived_png_path(scene_id: UUID, index_key: str) -> str:
-        return f"derived/scenes/{scene_id}/{index_key}.png"
+        return self._storage.resolve_read_path(asset_path)
 
 
 __all__ = [

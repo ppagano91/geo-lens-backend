@@ -61,6 +61,7 @@ def _scene(*, bands: list, source: str = "local", metadata=None):
         bands=bands,
         source=source,
         metadata_=metadata,
+        is_active=True,
     )
 
 

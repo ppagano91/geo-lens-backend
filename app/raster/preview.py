@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from app.raster.readers import resolve_asset_path
+from app.services.asset_storage_service import AssetStorageService
 from app.raster.writers import DEFAULT_INDEX_NODATA
 
 # Spectral indices are defined on [-1, 1]; stretch that range to the LUT.
@@ -167,7 +167,7 @@ def write_preview_png(
     rgba: np.ndarray,
 ) -> Path:
     """Write an RGBA PNG under DATA_ROOT (parents created; overwrite allowed)."""
-    path = resolve_asset_path(asset_path, data_root)
+    path = AssetStorageService(data_root).resolve_write_path(asset_path)
     array = np.asarray(rgba)
     if array.ndim != 3 or array.shape[2] != 4:
         raise PreviewWriteError(
