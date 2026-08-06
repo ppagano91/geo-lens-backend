@@ -1,22 +1,26 @@
-"""Local GeoTIFF scene ingest under DATA_ROOT (Fase 9A).
+"""Local GeoTIFF scene ingest under DATA_ROOT (Fase 9A / 9D).
 
 Registers ``raster_scenes`` + ``raster_bands`` from a folder of co-registered
 bands. Initial support: Landsat 8 Collection 2 Level-2 Surface Reflectance
-(``SR_B2``…``SR_B7``). No download, STAC, tiles, or AOI crop.
+(``SR_B2``…``SR_B7``). Supports path-based ingest (9A) and UI upload (9D).
+No STAC, tiles, or AOI crop.
 """
 
 from __future__ import annotations
 
 import re
+import shutil
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
+from uuid import uuid4
 
 from rasterio.warp import transform_bounds
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.raster.mtl import MtlMetadata, find_mtl_file, parse_mtl_file
 from app.raster.readers import (
     RasterFileNotFoundError,
@@ -47,6 +51,9 @@ from app.services.local_index_compute_service import LOCAL_INDEX_REGISTRY
 from app.services.scene_service import SceneService
 
 GEOTIFF_SUFFIXES = {".tif", ".tiff", ".TIF", ".TIFF"}
+UPLOAD_GEOTIFF_SUFFIXES = {".tif", ".tiff"}
+UPLOAD_MTL_SUFFIXES = {".txt"}
+UPLOAD_ALLOWED_SUFFIXES = UPLOAD_GEOTIFF_SUFFIXES | UPLOAD_MTL_SUFFIXES
 
 LANDSAT_8_REQUIRED_BANDS: tuple[str, ...] = (
     "SR_B2",
@@ -108,6 +115,14 @@ class _DiscoveredBand:
     relative_asset_path: str
 
 
+@dataclass(frozen=True)
+class UploadedSceneFile:
+    """In-memory upload payload before writing under DATA_ROOT."""
+
+    filename: str
+    content: bytes
+
+
 class LocalSceneIngestService:
     def __init__(self, db: Session, *, data_root: Path | str | None = None) -> None:
         self.db = db
@@ -124,8 +139,75 @@ class LocalSceneIngestService:
         self._storage = AssetStorageService(value)
 
     def ingest(self, payload: LocalSceneIngestRequest) -> LocalSceneIngestResult:
+        """Register a scene from a folder already present under DATA_ROOT (9A)."""
+        return self.ingest_prepared_folder(
+            scene_path=payload.scene_path,
+            source=payload.source,
+            name=payload.name,
+            overwrite=payload.overwrite,
+            ingest_method="local-scene",
+            phase="9A",
+        )
+
+    def ingest_upload(
+        self,
+        *,
+        files: Sequence[UploadedSceneFile],
+        source: str,
+        name: Optional[str] = None,
+        overwrite: bool = False,
+    ) -> LocalSceneIngestResult:
+        """Save uploaded bands under storage and register the scene (9D)."""
+        if not files:
+            raise LocalIngestError("No files uploaded; attach GeoTIFF bands (.tif/.tiff)")
+
+        source_sensor = normalize_sensor_token(source) if source else None
+        if source_sensor != SENSOR_LANDSAT_8:
+            raise LocalIngestError(
+                (
+                    f"Upload ingest currently supports source='landsat-8' only; "
+                    f"got '{source}'."
+                )
+            )
+
+        prepared = self._prepare_upload_files(files)
+        scene_slug = str(uuid4())
+        relative_scene_path = self._storage.build_uploaded_scene_dir(scene_slug)
+        scene_dir = self._storage.resolve_write_path(relative_scene_path)
+        scene_dir.mkdir(parents=True, exist_ok=False)
+
+        try:
+            for filename, content in prepared:
+                dest = scene_dir / filename
+                dest.write_bytes(content)
+
+            return self.ingest_prepared_folder(
+                scene_path=relative_scene_path,
+                source=source,
+                name=name,
+                overwrite=overwrite,
+                ingest_method="upload-scene",
+                phase="9D",
+            )
+        except Exception:
+            # Drop orphaned upload folder when registration fails.
+            if scene_dir.exists():
+                shutil.rmtree(scene_dir, ignore_errors=True)
+            raise
+
+    def ingest_prepared_folder(
+        self,
+        *,
+        scene_path: str,
+        source: str,
+        name: Optional[str] = None,
+        overwrite: bool = False,
+        ingest_method: str = "local-scene",
+        phase: str = "9A",
+    ) -> LocalSceneIngestResult:
+        """Shared register path for an already-prepared scene folder under DATA_ROOT."""
         warnings: list[IngestionWarning] = []
-        relative_scene_path = self._normalize_relative_path(payload.scene_path)
+        relative_scene_path = self._normalize_relative_path(scene_path)
         scene_dir = self._resolve_scene_dir(relative_scene_path)
 
         geotiffs = self._list_geotiffs(scene_dir)
@@ -137,7 +219,7 @@ class LocalSceneIngestService:
         mtl_meta, mtl_path = self._load_mtl(scene_dir, warnings)
         discovered = self._discover_bands(geotiffs, relative_scene_path, warnings)
         sensor = self._detect_ingest_sensor(
-            source=payload.source,
+            source=source,
             mtl=mtl_meta,
             discovered_keys=set(discovered),
             warnings=warnings,
@@ -158,7 +240,7 @@ class LocalSceneIngestService:
         existing = self.repository.find_by_ingest_scene_path(relative_scene_path)
         overwritten = False
         if existing is not None:
-            if not payload.overwrite:
+            if not overwrite:
                 raise SceneAlreadyExistsError(
                     relative_scene_path, str(existing.id)
                 )
@@ -182,8 +264,8 @@ class LocalSceneIngestService:
             sample_band=required["SR_B4"].path,
             warnings=warnings,
         )
-        name = self._resolve_name(
-            payload_name=payload.name,
+        resolved_name = self._resolve_name(
+            payload_name=name,
             mtl=mtl_meta,
             scene_dir=scene_dir,
             relative_scene_path=relative_scene_path,
@@ -195,10 +277,12 @@ class LocalSceneIngestService:
             mtl=mtl_meta,
             mtl_path=mtl_path,
             band_meta=band_meta,
+            ingest_method=ingest_method,
+            phase=phase,
         )
 
         create_payload = SceneCreate(
-            name=name,
+            name=resolved_name,
             source=SENSOR_LANDSAT_8,
             acquisition_date=acquisition_date,
             cloud_cover=(
@@ -253,6 +337,59 @@ class LocalSceneIngestService:
             metadata=created.metadata,
             overwritten=overwritten,
         )
+
+    def _prepare_upload_files(
+        self, files: Sequence[UploadedSceneFile]
+    ) -> list[tuple[str, bytes]]:
+        prepared: list[tuple[str, bytes]] = []
+        seen_names: set[str] = set()
+        max_bytes = int(getattr(settings, "max_upload_file_bytes", 0) or 0)
+
+        for item in files:
+            safe_name = self._safe_upload_filename(item.filename)
+            suffix = Path(safe_name).suffix.lower()
+            if suffix not in UPLOAD_ALLOWED_SUFFIXES:
+                raise LocalIngestError(
+                    f"Invalid file extension for '{item.filename}'. "
+                    f"Allowed: .tif, .tiff, and .txt (MTL)."
+                )
+
+            content = item.content
+            if max_bytes > 0 and len(content) > max_bytes:
+                raise LocalIngestError(
+                    f"File '{safe_name}' exceeds max upload size "
+                    f"({max_bytes} bytes)."
+                )
+
+            if safe_name.lower() in seen_names:
+                raise LocalIngestError(
+                    f"Duplicate uploaded filename '{safe_name}'."
+                )
+            seen_names.add(safe_name.lower())
+            prepared.append((safe_name, content))
+
+        has_geotiff = any(
+            Path(name).suffix.lower() in UPLOAD_GEOTIFF_SUFFIXES for name, _ in prepared
+        )
+        if not has_geotiff:
+            raise LocalIngestError(
+                "Upload must include at least one GeoTIFF (.tif/.tiff) band file."
+            )
+
+        return prepared
+
+    @staticmethod
+    def _safe_upload_filename(filename: str) -> str:
+        raw = (filename or "").strip()
+        if not raw:
+            raise LocalIngestError("Uploaded file is missing a filename.")
+        # Reject path separators / traversal; keep basename only.
+        name = Path(raw.replace("\\", "/")).name
+        if not name or name in (".", ".."):
+            raise LocalIngestError(f"Invalid uploaded filename: {filename!r}")
+        if "/" in name or "\\" in name:
+            raise LocalIngestError(f"Invalid uploaded filename: {filename!r}")
+        return name
 
     def _normalize_relative_path(self, scene_path: str) -> str:
         try:
@@ -593,6 +730,8 @@ class LocalSceneIngestService:
         mtl: Optional[MtlMetadata],
         mtl_path: Optional[Path],
         band_meta: dict[str, RasterMetadata],
+        ingest_method: str = "local-scene",
+        phase: str = "9A",
     ) -> dict[str, Any]:
         ref = band_meta["SR_B4"]
         meta: dict[str, Any] = {
@@ -600,8 +739,8 @@ class LocalSceneIngestService:
             "sensor": sensor,
             "ingest_scene_path": relative_scene_path,
             "ingest": {
-                "method": "local-scene",
-                "phase": "9A",
+                "method": ingest_method,
+                "phase": phase,
                 "scene_path": relative_scene_path,
             },
             "crs": ref.crs,
@@ -699,5 +838,7 @@ __all__ = [
     "LocalSceneIngestService",
     "LocalIngestError",
     "SceneAlreadyExistsError",
+    "UploadedSceneFile",
     "LANDSAT_8_REQUIRED_BANDS",
+    "UPLOAD_ALLOWED_SUFFIXES",
 ]

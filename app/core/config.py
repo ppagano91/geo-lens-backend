@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     # Relative paths in raster_bands.asset_path resolve against this root
     # via AssetStorageService (local filesystem storage for now).
     data_root: str = "../data"
+    # Max size per uploaded file for POST /ingest/upload-scene (0 = unlimited).
+    max_upload_file_bytes: int = 536_870_912  # 512 MiB
 
     @field_validator("cors_origins", mode="before")
     @classmethod

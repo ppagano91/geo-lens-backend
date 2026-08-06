@@ -86,6 +86,18 @@ def test_build_derived_asset_path() -> None:
     )
 
 
+def test_build_uploaded_scene_dir() -> None:
+    scene_slug = uuid4()
+    storage = AssetStorageService(".")
+
+    assert (
+        storage.build_uploaded_scene_dir(scene_slug)
+        == f"uploaded/scenes/{scene_slug}"
+    )
+    with pytest.raises(AssetStorageError, match="empty"):
+        storage.build_uploaded_scene_dir("  ")
+
+
 def test_validate_normalizes_slashes(tmp_path: Path) -> None:
     storage = AssetStorageService(tmp_path)
     assert (

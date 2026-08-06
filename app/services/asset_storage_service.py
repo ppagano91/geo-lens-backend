@@ -22,6 +22,8 @@ from app.core.config import settings
 
 # Layout for derived index products (GeoTIFF + PNG previews).
 DERIVED_SCENES_PREFIX = "derived/scenes"
+# Layout for scenes uploaded via UI (Fase 9D).
+UPLOADED_SCENES_PREFIX = "uploaded/scenes"
 
 
 class AssetStorageError(Exception):
@@ -116,9 +118,20 @@ class AssetStorageService:
 
         return f"{DERIVED_SCENES_PREFIX}/{scene_id}/{key}.{ext}"
 
+    def build_uploaded_scene_dir(self, scene_slug: UUID | str) -> str:
+        """Build a relative directory for a UI-uploaded scene under DATA_ROOT.
+
+        Convention: ``uploaded/scenes/{scene_slug}/``
+        """
+        slug = str(scene_slug or "").strip()
+        if not slug:
+            raise AssetStorageError("scene_slug is empty")
+        return f"{UPLOADED_SCENES_PREFIX}/{slug}"
+
 
 __all__ = [
     "AssetStorageError",
     "AssetStorageService",
     "DERIVED_SCENES_PREFIX",
+    "UPLOADED_SCENES_PREFIX",
 ]
