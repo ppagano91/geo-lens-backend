@@ -64,6 +64,48 @@ class DerivedGeotiffNotFoundError(Exception):
         )
 
 
+class CroppedGeotiffNotFoundError(Exception):
+    """AOI-cropped derived GeoTIFF is missing; POST .../crop-by-aoi must run first."""
+
+    def __init__(
+        self,
+        scene_id: UUID,
+        index_key: str,
+        aoi_id: UUID,
+        asset_path: str,
+    ) -> None:
+        self.scene_id = scene_id
+        self.index_key = index_key
+        self.aoi_id = aoi_id
+        self.asset_path = asset_path
+        super().__init__(
+            f"Cropped GeoTIFF not found for scene {scene_id} index '{index_key}' "
+            f"AOI {aoi_id} at '{asset_path}'. Generate it first with "
+            f"POST /api/v1/scenes/{scene_id}/indices/{index_key}/crop-by-aoi"
+        )
+
+
+class CroppedPreviewPngNotFoundError(Exception):
+    """AOI-cropped preview PNG is missing; re-run crop with generate_preview=true."""
+
+    def __init__(
+        self,
+        scene_id: UUID,
+        index_key: str,
+        aoi_id: UUID,
+        asset_path: str,
+    ) -> None:
+        self.scene_id = scene_id
+        self.index_key = index_key
+        self.aoi_id = aoi_id
+        self.asset_path = asset_path
+        super().__init__(
+            f"Cropped preview PNG not found for scene {scene_id} index '{index_key}' "
+            f"AOI {aoi_id} at '{asset_path}'. Re-run crop-by-aoi with "
+            "generate_preview=true"
+        )
+
+
 class IndexPreviewService:
     """Orchestrate derived GeoTIFF → RGBA PNG preview for a scene index."""
 
@@ -154,6 +196,8 @@ __all__ = [
     "IndexPreviewService",
     "DerivedGeotiffNotFoundError",
     "PreviewPngNotFoundError",
+    "CroppedGeotiffNotFoundError",
+    "CroppedPreviewPngNotFoundError",
     "PreviewWriteError",
     "UnsupportedIndexError",
     "RasterFileNotFoundError",

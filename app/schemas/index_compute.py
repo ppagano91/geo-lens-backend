@@ -122,5 +122,65 @@ class IndexMapOverlayResult(BaseModel):
     )
 
 
+class IndexAoiCropRequest(BaseModel):
+    """Body for cropping a derived index GeoTIFF by a saved AOI (Fase 9F)."""
+
+    aoi_id: UUID
+    overwrite: bool = False
+    generate_preview: bool = True
+
+
+class IndexAoiCropRasterInfo(BaseModel):
+    """Cropped raster metadata."""
+
+    width: int
+    height: int
+    crs: Optional[str] = None
+    dtype: str = "float32"
+    nodata: float = Field(description="Nodata sentinel of the cropped GeoTIFF")
+
+
+class IndexAoiCropOutputInfo(BaseModel):
+    """Paths of cropped derived products (relative to DATA_ROOT)."""
+
+    geotiff_asset_path: str
+    png_asset_path: Optional[str] = None
+
+
+class IndexAoiCropResult(BaseModel):
+    """Result of cropping a derived index by AOI."""
+
+    scene_id: UUID
+    index_key: str
+    aoi_id: UUID
+    status: str = "cropped"
+    raster: IndexAoiCropRasterInfo
+    stats: IndexStats
+    output: IndexAoiCropOutputInfo
+
+
+class IndexAoiCropMapOverlayResult(BaseModel):
+    """MapLibre overlay metadata for an AOI-cropped derived index (Fase 9F)."""
+
+    scene_id: UUID
+    index_key: str
+    aoi_id: UUID
+    image_url: str = Field(
+        description="API path of the cropped preview PNG (relative to API host)"
+    )
+    width: int
+    height: int
+    crs_original: str
+    bounds_original: IndexMapOverlayBounds
+    coordinates_wgs84: list[list[float]] = Field(
+        description=(
+            "Four [lng, lat] corners in MapLibre image-source order: "
+            "top-left, top-right, bottom-right, bottom-left"
+        ),
+        min_length=4,
+        max_length=4,
+    )
+
+
 # Backward-compatible alias for Fase 7B callers / OpenAPI.
 NdviComputeResult = IndexComputeResult

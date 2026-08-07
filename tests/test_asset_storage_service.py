@@ -86,6 +86,23 @@ def test_build_derived_asset_path() -> None:
     )
 
 
+def test_build_derived_aoi_asset_path() -> None:
+    scene_id = uuid4()
+    aoi_id = uuid4()
+    storage = AssetStorageService(".")
+
+    assert (
+        storage.build_derived_aoi_asset_path(scene_id, aoi_id, "ndvi", "tif")
+        == f"derived/scenes/{scene_id}/aois/{aoi_id}/ndvi.tif"
+    )
+    assert (
+        storage.build_derived_aoi_asset_path(scene_id, aoi_id, "NDMI", ".png")
+        == f"derived/scenes/{scene_id}/aois/{aoi_id}/ndmi.png"
+    )
+    with pytest.raises(AssetStorageError, match="aoi_id"):
+        storage.build_derived_aoi_asset_path(scene_id, "  ", "ndvi", "tif")
+
+
 def test_build_uploaded_scene_dir() -> None:
     scene_slug = uuid4()
     storage = AssetStorageService(".")

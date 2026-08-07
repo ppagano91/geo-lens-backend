@@ -8,6 +8,9 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.schemas.band import BandRead
 from app.schemas.index_compute import (
+    IndexAoiCropMapOverlayResult,
+    IndexAoiCropRequest,
+    IndexAoiCropResult,
     IndexComputeResult,
     IndexComputeSaveResult,
     IndexMapOverlayResult,
@@ -15,11 +18,20 @@ from app.schemas.index_compute import (
     NdviComputeResult,
 )
 from app.schemas.scene import SceneCreate, SceneListItem, SceneRead
+from app.services.index_aoi_crop_service import (
+    IndexAoiCropConflictError,
+    IndexAoiCropService,
+    IndexAoiNoIntersectionError,
+    IndexAoiReprojectionError,
+)
+from app.services.aoi_service import AoiNotFoundError
 from app.services.index_map_overlay_service import (
     IndexMapOverlayError,
     IndexMapOverlayService,
 )
 from app.services.index_preview_service import (
+    CroppedGeotiffNotFoundError,
+    CroppedPreviewPngNotFoundError,
     DerivedGeotiffNotFoundError,
     IndexPreviewService,
     PreviewPngNotFoundError,
@@ -52,6 +64,11 @@ def _raise_index_compute_http(exc: Exception, *, scene_id: UUID) -> NoReturn:
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Scene {scene_id} not found",
         ) from exc
+    if isinstance(exc, AoiNotFoundError):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"AOI {exc} not found" if str(exc) else "AOI not found",
+        ) from exc
     if isinstance(exc, UnsupportedIndexError):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -72,12 +89,33 @@ def _raise_index_compute_http(exc: Exception, *, scene_id: UUID) -> NoReturn:
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc),
         ) from exc
-    if isinstance(exc, (PreviewPngNotFoundError, DerivedGeotiffNotFoundError)):
+    if isinstance(
+        exc,
+        (
+            PreviewPngNotFoundError,
+            DerivedGeotiffNotFoundError,
+            CroppedGeotiffNotFoundError,
+            CroppedPreviewPngNotFoundError,
+        ),
+    ):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc),
         ) from exc
-    if isinstance(exc, IndexMapOverlayError):
+    if isinstance(exc, IndexAoiCropConflictError):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    if isinstance(
+        exc,
+        (
+            IndexAoiNoIntersectionError,
+            IndexAoiReprojectionError,
+            GeometryValidationError,
+            IndexMapOverlayError,
+        ),
+    ):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(exc),
@@ -375,6 +413,145 @@ def download_scene_index_png(
         filename=f"{scene_id}_{normalized_key}.png",
         content_disposition_type="attachment",
     )
+
+
+@router.post(
+    "/{scene_id}/indices/{index_key}/crop-by-aoi",
+    response_model=IndexAoiCropResult,
+)
+def crop_scene_index_by_aoi(
+    scene_id: UUID,
+    index_key: str,
+    payload: IndexAoiCropRequest,
+    db: Session = Depends(get_db),
+) -> IndexAoiCropResult:
+    """Crop an existing derived index GeoTIFF by a saved AOI (Fase 9F).
+
+    Does not crop original bands or recalculate the index. Requires a prior
+    ``compute-and-save`` for the full derived GeoTIFF.
+    """
+    service = IndexAoiCropService(db)
+    try:
+        return service.crop_by_aoi(
+            scene_id,
+            index_key,
+            payload.aoi_id,
+            overwrite=payload.overwrite,
+            generate_preview=payload.generate_preview,
+        )
+    except (
+        SceneNotFoundError,
+        AoiNotFoundError,
+        UnsupportedIndexError,
+        DerivedGeotiffNotFoundError,
+        IndexAoiCropConflictError,
+        IndexAoiNoIntersectionError,
+        IndexAoiReprojectionError,
+        GeometryValidationError,
+        RasterFileNotFoundError,
+        RasterPathError,
+        RasterReadError,
+        RasterWriteError,
+        PreviewWriteError,
+    ) as exc:
+        _raise_index_compute_http(exc, scene_id=scene_id)
+
+
+@router.get(
+    "/{scene_id}/indices/{index_key}/aois/{aoi_id}/download.tif",
+    response_class=FileResponse,
+    responses={
+        200: {
+            "content": {"image/tiff": {}},
+            "description": "Existing AOI-cropped index GeoTIFF (attachment)",
+        },
+        404: {"description": "Unsupported index or cropped GeoTIFF missing"},
+    },
+)
+def download_scene_index_aoi_geotiff(
+    scene_id: UUID,
+    index_key: str,
+    aoi_id: UUID,
+) -> FileResponse:
+    """Download an existing AOI-cropped derived index GeoTIFF."""
+    service = IndexAoiCropService()
+    normalized_key = index_key.strip().lower()
+    try:
+        path = service.resolve_cropped_geotiff(scene_id, index_key, aoi_id)
+    except (
+        UnsupportedIndexError,
+        CroppedGeotiffNotFoundError,
+        RasterPathError,
+    ) as exc:
+        _raise_index_compute_http(exc, scene_id=scene_id)
+
+    return FileResponse(
+        path,
+        media_type="image/tiff",
+        filename=f"{scene_id}_{normalized_key}_{aoi_id}.tif",
+        content_disposition_type="attachment",
+    )
+
+
+@router.get(
+    "/{scene_id}/indices/{index_key}/aois/{aoi_id}/download.png",
+    response_class=FileResponse,
+    responses={
+        200: {
+            "content": {"image/png": {}},
+            "description": "Existing AOI-cropped index preview PNG (attachment)",
+        },
+        404: {"description": "Unsupported index or cropped PNG missing"},
+    },
+)
+def download_scene_index_aoi_png(
+    scene_id: UUID,
+    index_key: str,
+    aoi_id: UUID,
+) -> FileResponse:
+    """Download an existing AOI-cropped index preview PNG."""
+    service = IndexAoiCropService()
+    normalized_key = index_key.strip().lower()
+    try:
+        path = service.resolve_cropped_png(scene_id, index_key, aoi_id)
+    except (
+        UnsupportedIndexError,
+        CroppedPreviewPngNotFoundError,
+        RasterPathError,
+    ) as exc:
+        _raise_index_compute_http(exc, scene_id=scene_id)
+
+    return FileResponse(
+        path,
+        media_type="image/png",
+        filename=f"{scene_id}_{normalized_key}_{aoi_id}.png",
+        content_disposition_type="attachment",
+    )
+
+
+@router.get(
+    "/{scene_id}/indices/{index_key}/aois/{aoi_id}/map-overlay",
+    response_model=IndexAoiCropMapOverlayResult,
+)
+def get_scene_index_aoi_map_overlay(
+    scene_id: UUID,
+    index_key: str,
+    aoi_id: UUID,
+) -> IndexAoiCropMapOverlayResult:
+    """Return MapLibre image-overlay metadata for an AOI-cropped index PNG."""
+    service = IndexAoiCropService()
+    try:
+        return service.get_map_overlay(scene_id, index_key, aoi_id)
+    except (
+        UnsupportedIndexError,
+        CroppedGeotiffNotFoundError,
+        CroppedPreviewPngNotFoundError,
+        RasterFileNotFoundError,
+        RasterPathError,
+        RasterReadError,
+        IndexMapOverlayError,
+    ) as exc:
+        _raise_index_compute_http(exc, scene_id=scene_id)
 
 
 @router.delete("/{scene_id}", status_code=status.HTTP_204_NO_CONTENT)

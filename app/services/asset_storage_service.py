@@ -118,6 +118,32 @@ class AssetStorageService:
 
         return f"{DERIVED_SCENES_PREFIX}/{scene_id}/{key}.{ext}"
 
+    def build_derived_aoi_asset_path(
+        self,
+        scene_id: UUID | str,
+        aoi_id: UUID | str,
+        index_key: str,
+        extension: str,
+    ) -> str:
+        """Build a relative path for an AOI-cropped derived index under DATA_ROOT.
+
+        Convention:
+        ``derived/scenes/{scene_id}/aois/{aoi_id}/{index_key}.{extension}``
+        """
+        key = (index_key or "").strip().lower()
+        if not key:
+            raise AssetStorageError("index_key is empty")
+
+        ext = (extension or "").strip().lstrip(".")
+        if not ext:
+            raise AssetStorageError("extension is empty")
+
+        aoi = str(aoi_id or "").strip()
+        if not aoi:
+            raise AssetStorageError("aoi_id is empty")
+
+        return f"{DERIVED_SCENES_PREFIX}/{scene_id}/aois/{aoi}/{key}.{ext}"
+
     def build_uploaded_scene_dir(self, scene_slug: UUID | str) -> str:
         """Build a relative directory for a UI-uploaded scene under DATA_ROOT.
 

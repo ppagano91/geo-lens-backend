@@ -92,7 +92,7 @@ class IndexMapOverlayService:
         right = float(meta.bounds["right"])
         top = float(meta.bounds["top"])
 
-        coordinates = _corners_to_wgs84(
+        coordinates = corners_to_wgs84(
             meta.crs,
             left=left,
             bottom=bottom,
@@ -121,7 +121,7 @@ class IndexMapOverlayService:
         )
 
 
-def _corners_to_wgs84(
+def corners_to_wgs84(
     crs: str,
     *,
     left: float,
@@ -149,9 +149,14 @@ def _corners_to_wgs84(
     ]
 
 
+# Backward-compatible private alias.
+_corners_to_wgs84 = corners_to_wgs84
+
+
 __all__ = [
     "IndexMapOverlayService",
     "IndexMapOverlayError",
+    "corners_to_wgs84",
     "UnsupportedIndexError",
     "DerivedGeotiffNotFoundError",
     "PreviewPngNotFoundError",
