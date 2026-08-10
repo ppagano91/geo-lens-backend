@@ -18,6 +18,9 @@ from app.schemas.index_compute import (
     NdviComputeResult,
 )
 from app.schemas.rgb_composite import (
+    RgbCompositeAoiMapOverlayResult,
+    RgbCompositeAoiPreviewRequest,
+    RgbCompositeAoiPreviewResult,
     RgbCompositeMapOverlayResult,
     RgbCompositePreviewRequest,
     RgbCompositePreviewResult,
@@ -53,6 +56,8 @@ from app.services.local_index_compute_service import (
     UnsupportedIndexError,
 )
 from app.services.rgb_composite_service import (
+    RgbAoiCompositePngNotFoundError,
+    RgbAoiNoIntersectionError,
     RgbCompositeExistsError,
     RgbCompositePngNotFoundError,
     RgbCompositeService,
@@ -108,6 +113,7 @@ def _raise_index_compute_http(exc: Exception, *, scene_id: UUID) -> NoReturn:
             CroppedGeotiffNotFoundError,
             CroppedPreviewPngNotFoundError,
             RgbCompositePngNotFoundError,
+            RgbAoiCompositePngNotFoundError,
         ),
     ):
         raise HTTPException(
@@ -123,6 +129,7 @@ def _raise_index_compute_http(exc: Exception, *, scene_id: UUID) -> NoReturn:
         exc,
         (
             IndexAoiNoIntersectionError,
+            RgbAoiNoIntersectionError,
             IndexAoiReprojectionError,
             GeometryValidationError,
             IndexMapOverlayError,
@@ -657,6 +664,135 @@ def get_scene_rgb_composite_map_overlay(
         RasterFileNotFoundError,
         RasterPathError,
         RasterReadError,
+        IndexMapOverlayError,
+    ) as exc:
+        _raise_index_compute_http(exc, scene_id=scene_id)
+
+
+@router.post(
+    "/{scene_id}/rgb-composites/preview-by-aoi",
+    response_model=RgbCompositeAoiPreviewResult,
+)
+def create_scene_rgb_composite_preview_by_aoi(
+    scene_id: UUID,
+    payload: RgbCompositeAoiPreviewRequest,
+    db: Session = Depends(get_db),
+) -> RgbCompositeAoiPreviewResult:
+    """Crop source bands by AOI, then generate an RGB composite PNG (Fase 9H.1).
+
+    Does not generate a full-scene RGB first. Writes
+    ``derived/scenes/{scene_id}/aois/{aoi_id}/rgb/{preset}.png``.
+    """
+    service = RgbCompositeService(db)
+    try:
+        return service.create_preview_by_aoi(scene_id, payload)
+    except (
+        SceneNotFoundError,
+        AoiNotFoundError,
+        UnsupportedRgbPresetError,
+        MissingRequiredBandError,
+        IncompatibleRasterBandsError,
+        RgbCompositeExistsError,
+        RgbAoiNoIntersectionError,
+        IndexAoiReprojectionError,
+        GeometryValidationError,
+        RasterFileNotFoundError,
+        RasterPathError,
+        RasterReadError,
+        PreviewWriteError,
+    ) as exc:
+        _raise_index_compute_http(exc, scene_id=scene_id)
+
+
+@router.get(
+    "/{scene_id}/rgb-composites/aois/{aoi_id}/{preset}/preview.png",
+    response_class=FileResponse,
+    responses={
+        200: {
+            "content": {"image/png": {}},
+            "description": "Existing AOI RGB composite PNG (inline)",
+        },
+        404: {"description": "Unsupported preset or AOI RGB PNG missing"},
+    },
+)
+def get_scene_rgb_aoi_preview_png(
+    scene_id: UUID,
+    aoi_id: UUID,
+    preset: str,
+) -> FileResponse:
+    """Serve an existing AOI-cropped RGB composite PNG (does not regenerate)."""
+    service = RgbCompositeService()
+    normalized = preset.strip().lower()
+    try:
+        path = service.resolve_aoi_preview_png(scene_id, aoi_id, preset)
+    except (
+        UnsupportedRgbPresetError,
+        RgbAoiCompositePngNotFoundError,
+        RasterPathError,
+    ) as exc:
+        _raise_index_compute_http(exc, scene_id=scene_id)
+
+    return FileResponse(
+        path,
+        media_type="image/png",
+        filename=f"{normalized}.png",
+        content_disposition_type="inline",
+    )
+
+
+@router.get(
+    "/{scene_id}/rgb-composites/aois/{aoi_id}/{preset}/download.png",
+    response_class=FileResponse,
+    responses={
+        200: {
+            "content": {"image/png": {}},
+            "description": "Existing AOI RGB composite PNG (attachment)",
+        },
+        404: {"description": "Unsupported preset or AOI RGB PNG missing"},
+    },
+)
+def download_scene_rgb_aoi_png(
+    scene_id: UUID,
+    aoi_id: UUID,
+    preset: str,
+) -> FileResponse:
+    """Download an existing AOI-cropped RGB composite PNG."""
+    service = RgbCompositeService()
+    normalized = preset.strip().lower()
+    try:
+        path = service.resolve_aoi_preview_png(scene_id, aoi_id, preset)
+    except (
+        UnsupportedRgbPresetError,
+        RgbAoiCompositePngNotFoundError,
+        RasterPathError,
+    ) as exc:
+        _raise_index_compute_http(exc, scene_id=scene_id)
+
+    return FileResponse(
+        path,
+        media_type="image/png",
+        filename=f"{scene_id}_{aoi_id}_{normalized}.png",
+        content_disposition_type="attachment",
+    )
+
+
+@router.get(
+    "/{scene_id}/rgb-composites/aois/{aoi_id}/{preset}/map-overlay",
+    response_model=RgbCompositeAoiMapOverlayResult,
+)
+def get_scene_rgb_aoi_map_overlay(
+    scene_id: UUID,
+    aoi_id: UUID,
+    preset: str,
+) -> RgbCompositeAoiMapOverlayResult:
+    """Return MapLibre overlay metadata for an AOI-cropped RGB composite PNG."""
+    service = RgbCompositeService()
+    try:
+        return service.get_aoi_map_overlay(scene_id, aoi_id, preset)
+    except (
+        UnsupportedRgbPresetError,
+        RgbAoiCompositePngNotFoundError,
+        RasterPathError,
         IndexMapOverlayError,
     ) as exc:
         _raise_index_compute_http(exc, scene_id=scene_id)

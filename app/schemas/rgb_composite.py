@@ -88,6 +88,29 @@ class RgbCompositePreviewResult(BaseModel):
     output: RgbCompositeOutputInfo
 
 
+class RgbCompositeAoiPreviewRequest(RgbCompositePreviewRequest):
+    """Body for generating an RGB composite PNG cropped by a saved AOI."""
+
+    aoi_id: UUID = Field(description="Saved AOI used to crop source bands before RGB")
+
+
+class RgbCompositeAoiPreviewResult(BaseModel):
+    """AOI-cropped RGB composite PNG generation summary (Fase 9H.1)."""
+
+    scene_id: UUID
+    aoi_id: UUID
+    preset: str
+    status: str = "generated"
+    sensor: str
+    bands_used: dict[str, str] = Field(
+        description="Display channel → physical band_key (red/green/blue)"
+    )
+    width: int
+    height: int
+    crs: Optional[str] = None
+    output: RgbCompositeOutputInfo
+
+
 class RgbCompositeMapOverlayBounds(BaseModel):
     """Raster bounds in the original CRS (rasterio order)."""
 
@@ -119,12 +142,38 @@ class RgbCompositeMapOverlayResult(BaseModel):
     )
 
 
+class RgbCompositeAoiMapOverlayResult(BaseModel):
+    """MapLibre overlay metadata for an AOI-cropped RGB composite PNG."""
+
+    scene_id: UUID
+    aoi_id: UUID
+    preset: str
+    image_url: str = Field(
+        description="API path of the existing AOI RGB preview PNG"
+    )
+    width: int
+    height: int
+    crs_original: str
+    bounds_original: RgbCompositeMapOverlayBounds
+    coordinates_wgs84: list[list[float]] = Field(
+        description=(
+            "Four [lng, lat] corners in MapLibre image-source order: "
+            "top-left, top-right, bottom-right, bottom-left"
+        ),
+        min_length=4,
+        max_length=4,
+    )
+
+
 __all__ = [
     "RgbCompositePreviewRequest",
+    "RgbCompositeAoiPreviewRequest",
     "RgbCompositeOutputInfo",
     "RgbCompositePreviewResult",
+    "RgbCompositeAoiPreviewResult",
     "RgbCompositeMapOverlayBounds",
     "RgbCompositeMapOverlayResult",
+    "RgbCompositeAoiMapOverlayResult",
     "RgbPresetKey",
     "RgbStretchMode",
     "SPECTRAL_ROLES",

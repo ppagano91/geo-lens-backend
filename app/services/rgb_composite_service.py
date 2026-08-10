@@ -1,19 +1,31 @@
-"""RGB band composites from local scene GeoTIFF bands (Fase 9H).
+"""RGB band composites from local scene GeoTIFF bands (Fase 9H / 9H.1).
 
-First approximation of an SCP / Band Set style module: named presets resolve
-spectral roles → sensor band keys, stretch to uint8 RGBA PNG, and expose
-MapLibre overlay metadata. Does not write multiband GeoTIFF stacks, edit
-stretch interactively, crop by AOI, or touch spectral index compute.
+Named presets resolve spectral roles → sensor band keys, stretch to uint8 RGBA
+PNG, and expose MapLibre overlay metadata.
+
+Fase 9H.1: crop source bands by a saved AOI first (``rasterio.mask``), then
+stretch only the cropped window. Georef for AOI overlays is stored in a
+``.georef.json`` sidecar (same folder reserved for a future RGB GeoTIFF).
+
+Does not write multiband GeoTIFF stacks, register RGB in DB, or touch index
+compute.
 """
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+import numpy as np
+import rasterio
+from rasterio.errors import RasterioIOError
+from rasterio.mask import mask as rasterio_mask
+from rasterio.transform import Affine, array_bounds
+from rasterio.warp import transform_geom
 from sqlalchemy.orm import Session
 
 from app.models.band import RasterBand
@@ -25,18 +37,25 @@ from app.raster.readers import (
     RasterReadError,
     read_raster_array,
     read_raster_metadata,
+    resolve_asset_path,
 )
 from app.raster.rgb_stretch import render_rgb_rgba
 from app.raster.sensors import detect_sensor, resolve_band_key
 from app.repositories.scene_repository import SceneRepository
 from app.schemas.rgb_composite import (
+    RgbCompositeAoiMapOverlayResult,
+    RgbCompositeAoiPreviewRequest,
+    RgbCompositeAoiPreviewResult,
     RgbCompositeMapOverlayBounds,
     RgbCompositeMapOverlayResult,
     RgbCompositeOutputInfo,
     RgbCompositePreviewRequest,
     RgbCompositePreviewResult,
 )
+from app.services.aoi_service import AoiNotFoundError, AoiService
 from app.services.asset_storage_service import AssetStorageService
+from app.services.geometry import GeometryValidationError
+from app.services.index_aoi_crop_service import IndexAoiReprojectionError
 from app.services.index_map_overlay_service import (
     IndexMapOverlayError,
     corners_to_wgs84,
@@ -47,6 +66,8 @@ from app.services.local_index_compute_service import (
 )
 from app.services.scene_service import SceneNotFoundError
 
+_WGS84 = "EPSG:4326"
+
 
 @dataclass(frozen=True)
 class RgbCompositeSpec:
@@ -54,7 +75,6 @@ class RgbCompositeSpec:
 
     key: str
     display_name: str
-    # Display channel → spectral role (red/green/blue keys).
     roles: Mapping[str, str]
 
 
@@ -80,6 +100,29 @@ RGB_COMPOSITE_REGISTRY: dict[str, RgbCompositeSpec] = {
         roles={"red": "swir1", "green": "nir", "blue": "red"},
     ),
 }
+
+
+@dataclass(frozen=True)
+class _BandProfile:
+    """Lightweight alignment metadata without loading pixel arrays."""
+
+    band_key: str
+    asset_path: str
+    width: int
+    height: int
+    crs: str
+    transform: tuple[float, float, float, float, float, float]
+    count: int
+    nodata: float | None
+
+
+@dataclass(frozen=True)
+class _CroppedChannel:
+    data: np.ndarray
+    transform: tuple[float, float, float, float, float, float]
+    crs: str
+    width: int
+    height: int
 
 
 class UnsupportedRgbPresetError(Exception):
@@ -117,6 +160,40 @@ class RgbCompositePngNotFoundError(Exception):
         )
 
 
+class RgbAoiCompositePngNotFoundError(Exception):
+    """AOI RGB PNG missing; POST .../preview-by-aoi must run first."""
+
+    def __init__(
+        self,
+        scene_id: UUID,
+        aoi_id: UUID,
+        preset: str,
+        asset_path: str,
+    ) -> None:
+        self.scene_id = scene_id
+        self.aoi_id = aoi_id
+        self.preset = preset
+        self.asset_path = asset_path
+        super().__init__(
+            f"AOI RGB composite PNG not found for scene {scene_id} AOI {aoi_id} "
+            f"preset '{preset}' at '{asset_path}'. Generate it first with "
+            f"POST /api/v1/scenes/{scene_id}/rgb-composites/preview-by-aoi"
+        )
+
+
+class RgbAoiNoIntersectionError(Exception):
+    """AOI geometry does not intersect the source bands."""
+
+    def __init__(self, scene_id: UUID, aoi_id: UUID, preset: str) -> None:
+        self.scene_id = scene_id
+        self.aoi_id = aoi_id
+        self.preset = preset
+        super().__init__(
+            f"AOI {aoi_id} does not intersect RGB bands for scene {scene_id} "
+            f"preset '{preset}'"
+        )
+
+
 class RgbCompositeService:
     """Orchestrate band resolution, stretch, PNG write, and map-overlay metadata."""
 
@@ -126,6 +203,7 @@ class RgbCompositeService:
         *,
         data_root: Path | str | None = None,
     ) -> None:
+        self._db = db
         self.repository = SceneRepository(db) if db is not None else None
         self._storage = AssetStorageService(data_root)
 
@@ -157,7 +235,6 @@ class RgbCompositeService:
         bands_by_key = {band.band_key: band for band in scene.bands}
 
         role_bands: dict[str, RasterBand] = {}
-        # Unique spectral roles needed (a role may map to more than one channel).
         spectral_roles = list(dict.fromkeys(display_roles.values()))
         for spectral_role in spectral_roles:
             band_key = resolve_band_key(sensor, spectral_role)
@@ -211,6 +288,136 @@ class RgbCompositeService:
             output=RgbCompositeOutputInfo(asset_path=asset_path),
         )
 
+    def create_preview_by_aoi(
+        self,
+        scene_id: UUID,
+        request: RgbCompositeAoiPreviewRequest,
+    ) -> RgbCompositeAoiPreviewResult:
+        """Crop source bands by AOI, then stretch RGB for the cropped window."""
+        if self._db is None or self.repository is None:
+            raise RuntimeError(
+                "RgbCompositeService requires a DB session for preview-by-aoi"
+            )
+
+        spec = self._resolve_spec(request.preset)
+        display_roles = self._effective_roles(spec, request)
+        aoi_id = request.aoi_id
+
+        scene = self.repository.get_by_id(scene_id)
+        if scene is None or not scene.is_active:
+            raise SceneNotFoundError(str(scene_id))
+
+        aoi = AoiService(self._db).get(aoi_id)
+        geometry = aoi.geometry
+        if not geometry or geometry.get("type") not in {"Polygon", "MultiPolygon"}:
+            raise GeometryValidationError(
+                f"AOI {aoi_id} has invalid or empty geometry"
+            )
+
+        sensor = self._detect_scene_sensor(scene)
+        bands_by_key = {band.band_key: band for band in scene.bands}
+
+        role_bands: dict[str, RasterBand] = {}
+        spectral_roles = list(dict.fromkeys(display_roles.values()))
+        for spectral_role in spectral_roles:
+            band_key = resolve_band_key(sensor, spectral_role)
+            role_bands[spectral_role] = self._require_band(
+                scene_id, bands_by_key, band_key
+            )
+
+        profiles = {
+            role: self._read_band_profile(band)
+            for role, band in role_bands.items()
+        }
+        self._validate_profiles_aligned(profiles)
+
+        asset_path = self._storage.build_derived_aoi_rgb_asset_path(
+            scene_id, aoi_id, spec.key, "png"
+        )
+        if self._storage.exists(asset_path) and not request.overwrite:
+            raise RgbCompositeExistsError(scene_id, spec.key, asset_path)
+
+        ref_profile = profiles[display_roles["red"]]
+        geom_in_raster_crs = self._reproject_aoi(
+            geometry, ref_profile.crs, aoi_id=aoi_id
+        )
+
+        cropped: dict[str, _CroppedChannel] = {}
+        for spectral_role, band in role_bands.items():
+            cropped[spectral_role] = self._crop_band_by_aoi(
+                band.asset_path,
+                geom_in_raster_crs,
+                scene_id=scene_id,
+                aoi_id=aoi_id,
+                preset=spec.key,
+            )
+
+        ref_crop = cropped[display_roles["red"]]
+        for spectral_role, channel in cropped.items():
+            if (
+                channel.width != ref_crop.width
+                or channel.height != ref_crop.height
+                or channel.transform != ref_crop.transform
+                or channel.crs != ref_crop.crs
+            ):
+                raise IncompatibleRasterBandsError(
+                    f"AOI-cropped bands are not aligned after mask "
+                    f"({display_roles['red']} vs {spectral_role})"
+                )
+
+        red = cropped[display_roles["red"]]
+        green = cropped[display_roles["green"]]
+        blue = cropped[display_roles["blue"]]
+
+        rgba = render_rgb_rgba(
+            red.data,
+            green.data,
+            blue.data,
+            red_nodata=None,
+            green_nodata=None,
+            blue_nodata=None,
+            p_min=request.p_min,
+            p_max=request.p_max,
+        )
+        write_preview_png(asset_path, self.data_root, rgba)
+
+        left, bottom, right, top = array_bounds(
+            ref_crop.height,
+            ref_crop.width,
+            Affine(*ref_crop.transform),
+        )
+        self._write_georef_sidecar(
+            scene_id,
+            aoi_id,
+            spec.key,
+            crs=ref_crop.crs,
+            width=ref_crop.width,
+            height=ref_crop.height,
+            transform=ref_crop.transform,
+            left=float(left),
+            bottom=float(bottom),
+            right=float(right),
+            top=float(top),
+        )
+
+        bands_used = {
+            channel: role_bands[spectral_role].band_key
+            for channel, spectral_role in display_roles.items()
+        }
+
+        return RgbCompositeAoiPreviewResult(
+            scene_id=scene_id,
+            aoi_id=aoi_id,
+            preset=spec.key,
+            status="generated",
+            sensor=sensor,
+            bands_used=bands_used,
+            width=ref_crop.width,
+            height=ref_crop.height,
+            crs=ref_crop.crs,
+            output=RgbCompositeOutputInfo(asset_path=asset_path),
+        )
+
     def resolve_preview_png(self, scene_id: UUID, preset: str) -> Path:
         """Return absolute path of an existing RGB PNG (does not regenerate)."""
         spec = self._resolve_spec(preset)
@@ -219,6 +426,20 @@ class RgbCompositeService:
         )
         if not self._storage.exists(asset_path):
             raise RgbCompositePngNotFoundError(scene_id, spec.key, asset_path)
+        return self._storage.resolve_read_path(asset_path)
+
+    def resolve_aoi_preview_png(
+        self, scene_id: UUID, aoi_id: UUID, preset: str
+    ) -> Path:
+        """Return absolute path of an existing AOI RGB PNG."""
+        spec = self._resolve_spec(preset)
+        asset_path = self._storage.build_derived_aoi_rgb_asset_path(
+            scene_id, aoi_id, spec.key, "png"
+        )
+        if not self._storage.exists(asset_path):
+            raise RgbAoiCompositePngNotFoundError(
+                scene_id, aoi_id, spec.key, asset_path
+            )
         return self._storage.resolve_read_path(asset_path)
 
     def get_map_overlay(
@@ -243,7 +464,6 @@ class RgbCompositeService:
 
         sensor = self._detect_scene_sensor(scene)
         bands_by_key = {band.band_key: band for band in scene.bands}
-        # Use the red display channel's source band for georeferencing.
         red_role = spec.roles["red"]
         band_key = resolve_band_key(sensor, red_role)
         ref_band = self._require_band(scene_id, bands_by_key, band_key)
@@ -297,6 +517,226 @@ class RgbCompositeService:
             ),
             coordinates_wgs84=coordinates,
         )
+
+    def get_aoi_map_overlay(
+        self, scene_id: UUID, aoi_id: UUID, preset: str
+    ) -> RgbCompositeAoiMapOverlayResult:
+        """Return MapLibre overlay metadata for an AOI-cropped RGB PNG."""
+        spec = self._resolve_spec(preset)
+        png_asset = self._storage.build_derived_aoi_rgb_asset_path(
+            scene_id, aoi_id, spec.key, "png"
+        )
+        if not self._storage.exists(png_asset):
+            raise RgbAoiCompositePngNotFoundError(
+                scene_id, aoi_id, spec.key, png_asset
+            )
+
+        georef = self._read_georef_sidecar(scene_id, aoi_id, spec.key)
+        crs = str(georef["crs"])
+        left = float(georef["bounds"]["left"])
+        bottom = float(georef["bounds"]["bottom"])
+        right = float(georef["bounds"]["right"])
+        top = float(georef["bounds"]["top"])
+        width = int(georef["width"])
+        height = int(georef["height"])
+
+        coordinates = corners_to_wgs84(
+            crs,
+            left=left,
+            bottom=bottom,
+            right=right,
+            top=top,
+        )
+
+        image_url = (
+            f"/api/v1/scenes/{scene_id}/rgb-composites/aois/{aoi_id}/"
+            f"{spec.key}/preview.png"
+        )
+
+        return RgbCompositeAoiMapOverlayResult(
+            scene_id=scene_id,
+            aoi_id=aoi_id,
+            preset=spec.key,
+            image_url=image_url,
+            width=width,
+            height=height,
+            crs_original=crs,
+            bounds_original=RgbCompositeMapOverlayBounds(
+                left=left,
+                bottom=bottom,
+                right=right,
+                top=top,
+            ),
+            coordinates_wgs84=coordinates,
+        )
+
+    def _write_georef_sidecar(
+        self,
+        scene_id: UUID,
+        aoi_id: UUID,
+        preset: str,
+        *,
+        crs: str,
+        width: int,
+        height: int,
+        transform: tuple[float, float, float, float, float, float],
+        left: float,
+        bottom: float,
+        right: float,
+        top: float,
+    ) -> str:
+        """Persist cropped window georef next to the PNG (future GeoTIFF-ready)."""
+        asset_path = self._storage.build_derived_aoi_rgb_asset_path(
+            scene_id, aoi_id, preset, "georef.json"
+        )
+        path = self._storage.resolve_write_path(asset_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "crs": crs,
+            "width": width,
+            "height": height,
+            "transform": list(transform),
+            "bounds": {
+                "left": left,
+                "bottom": bottom,
+                "right": right,
+                "top": top,
+            },
+        }
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return asset_path
+
+    def _read_georef_sidecar(
+        self, scene_id: UUID, aoi_id: UUID, preset: str
+    ) -> dict[str, Any]:
+        asset_path = self._storage.build_derived_aoi_rgb_asset_path(
+            scene_id, aoi_id, preset, "georef.json"
+        )
+        if not self._storage.exists(asset_path):
+            raise IndexMapOverlayError(
+                f"Georef sidecar missing for AOI RGB composite at '{asset_path}'. "
+                "Regenerate with POST .../rgb-composites/preview-by-aoi"
+            )
+        path = self._storage.resolve_read_path(asset_path)
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise IndexMapOverlayError(
+                f"Cannot read georef sidecar '{asset_path}': {exc}"
+            ) from exc
+
+    def _read_band_profile(self, band: RasterBand) -> _BandProfile:
+        path = resolve_asset_path(band.asset_path, self.data_root)
+        path_str = str(path)
+        if not path.exists() or not path.is_file():
+            raise RasterFileNotFoundError(f"Raster file not found: {path_str}")
+
+        try:
+            with rasterio.open(path) as dataset:
+                if dataset.crs is None:
+                    raise IncompatibleRasterBandsError(
+                        f"Band '{band.band_key}' has no CRS"
+                    )
+                nodata = dataset.nodata
+                nodata_f = float(nodata) if nodata is not None else None
+                return _BandProfile(
+                    band_key=band.band_key,
+                    asset_path=band.asset_path,
+                    width=int(dataset.width),
+                    height=int(dataset.height),
+                    crs=dataset.crs.to_string(),
+                    transform=tuple(float(v) for v in list(dataset.transform)[:6]),
+                    count=int(dataset.count),
+                    nodata=nodata_f,
+                )
+        except IncompatibleRasterBandsError:
+            raise
+        except (RasterioIOError, OSError, ValueError) as exc:
+            raise RasterReadError(
+                f"Cannot read raster metadata: {path_str}"
+            ) from exc
+
+    def _crop_band_by_aoi(
+        self,
+        asset_path: str,
+        geom_in_raster_crs: dict,
+        *,
+        scene_id: UUID,
+        aoi_id: UUID,
+        preset: str,
+    ) -> _CroppedChannel:
+        path = resolve_asset_path(asset_path, self.data_root)
+        path_str = str(path)
+        if not path.exists() or not path.is_file():
+            raise RasterFileNotFoundError(f"Raster file not found: {path_str}")
+
+        try:
+            with rasterio.open(path) as src:
+                if src.crs is None:
+                    raise IndexAoiReprojectionError(
+                        f"Band '{asset_path}' has no CRS; cannot crop by AOI"
+                    )
+                nodata = float(src.nodata) if src.nodata is not None else 0.0
+                try:
+                    out_image, out_transform = rasterio_mask(
+                        src,
+                        [geom_in_raster_crs],
+                        crop=True,
+                        nodata=nodata,
+                        filled=True,
+                    )
+                except ValueError as exc:
+                    message = str(exc).lower()
+                    if (
+                        "do not overlap" in message
+                        or "shapes do not overlap" in message
+                    ):
+                        raise RgbAoiNoIntersectionError(
+                            scene_id, aoi_id, preset
+                        ) from exc
+                    raise IndexAoiReprojectionError(
+                        f"Mask failed for AOI {aoi_id}: {exc}"
+                    ) from exc
+
+                if (
+                    out_image.size == 0
+                    or out_image.shape[-1] == 0
+                    or out_image.shape[-2] == 0
+                ):
+                    raise RgbAoiNoIntersectionError(scene_id, aoi_id, preset)
+
+                raw = np.asarray(out_image[0], dtype=np.float32)
+                data = np.where(
+                    raw == np.float32(nodata), np.float32(np.nan), raw
+                )
+                height, width = int(data.shape[0]), int(data.shape[1])
+                return _CroppedChannel(
+                    data=data,
+                    transform=tuple(float(v) for v in list(out_transform)[:6]),
+                    crs=src.crs.to_string(),
+                    width=width,
+                    height=height,
+                )
+        except (
+            RgbAoiNoIntersectionError,
+            IndexAoiReprojectionError,
+            RasterFileNotFoundError,
+        ):
+            raise
+        except (RasterioIOError, OSError, ValueError) as exc:
+            raise RasterReadError(f"Cannot crop raster: {path_str}") from exc
+
+    @staticmethod
+    def _reproject_aoi(
+        geometry: dict, raster_crs: str, *, aoi_id: UUID
+    ) -> dict:
+        try:
+            return transform_geom(_WGS84, raster_crs, geometry)
+        except Exception as exc:  # noqa: BLE001
+            raise IndexAoiReprojectionError(
+                f"Cannot reproject AOI {aoi_id} from {_WGS84} "
+                f"to {raster_crs}: {exc}"
+            ) from exc
 
     @staticmethod
     def _resolve_spec(preset: str) -> RgbCompositeSpec:
@@ -378,6 +818,40 @@ class RgbCompositeService:
                     f"{ref.data.shape} vs {other.data.shape}"
                 )
 
+    @staticmethod
+    def _validate_profiles_aligned(profiles: Mapping[str, _BandProfile]) -> None:
+        items = list(profiles.items())
+        if len(items) < 1:
+            raise IncompatibleRasterBandsError(
+                "At least one band is required for RGB composite"
+            )
+
+        ref_key, ref = items[0]
+        if ref.count != 1:
+            raise IncompatibleRasterBandsError(
+                f"Band {ref.band_key} must be a single-band raster"
+            )
+
+        for other_key, other in items[1:]:
+            label = f"{ref_key}/{other_key}"
+            if other.count != 1:
+                raise IncompatibleRasterBandsError(
+                    f"Bands {label} must be single-band rasters"
+                )
+            if ref.crs != other.crs:
+                raise IncompatibleRasterBandsError(
+                    f"Bands {label} have different CRS: {ref.crs!r} vs {other.crs!r}"
+                )
+            if ref.width != other.width or ref.height != other.height:
+                raise IncompatibleRasterBandsError(
+                    f"Bands {label} have different dimensions: "
+                    f"{ref.width}x{ref.height} vs {other.width}x{other.height}"
+                )
+            if ref.transform != other.transform:
+                raise IncompatibleRasterBandsError(
+                    f"Bands {label} have different geotransforms"
+                )
+
 
 __all__ = [
     "RgbCompositeService",
@@ -386,9 +860,14 @@ __all__ = [
     "UnsupportedRgbPresetError",
     "RgbCompositeExistsError",
     "RgbCompositePngNotFoundError",
+    "RgbAoiCompositePngNotFoundError",
+    "RgbAoiNoIntersectionError",
     "MissingRequiredBandError",
     "IncompatibleRasterBandsError",
     "SceneNotFoundError",
+    "AoiNotFoundError",
+    "GeometryValidationError",
+    "IndexAoiReprojectionError",
     "RasterFileNotFoundError",
     "RasterPathError",
     "RasterReadError",
