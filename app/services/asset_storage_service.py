@@ -144,6 +144,26 @@ class AssetStorageService:
 
         return f"{DERIVED_SCENES_PREFIX}/{scene_id}/aois/{aoi}/{key}.{ext}"
 
+    def build_derived_rgb_asset_path(
+        self,
+        scene_id: UUID | str,
+        preset: str,
+        extension: str,
+    ) -> str:
+        """Build a relative path for an RGB composite PNG under DATA_ROOT.
+
+        Convention: ``derived/scenes/{scene_id}/rgb/{preset}.{extension}``
+        """
+        key = (preset or "").strip().lower()
+        if not key:
+            raise AssetStorageError("preset is empty")
+
+        ext = (extension or "").strip().lstrip(".")
+        if not ext:
+            raise AssetStorageError("extension is empty")
+
+        return f"{DERIVED_SCENES_PREFIX}/{scene_id}/rgb/{key}.{ext}"
+
     def build_uploaded_scene_dir(self, scene_slug: UUID | str) -> str:
         """Build a relative directory for a UI-uploaded scene under DATA_ROOT.
 

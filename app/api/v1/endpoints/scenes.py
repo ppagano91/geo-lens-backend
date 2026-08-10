@@ -17,6 +17,11 @@ from app.schemas.index_compute import (
     IndexPreviewResult,
     NdviComputeResult,
 )
+from app.schemas.rgb_composite import (
+    RgbCompositeMapOverlayResult,
+    RgbCompositePreviewRequest,
+    RgbCompositePreviewResult,
+)
 from app.schemas.scene import SceneCreate, SceneListItem, SceneRead
 from app.services.index_aoi_crop_service import (
     IndexAoiCropConflictError,
@@ -47,6 +52,12 @@ from app.services.local_index_compute_service import (
     RasterWriteError,
     UnsupportedIndexError,
 )
+from app.services.rgb_composite_service import (
+    RgbCompositeExistsError,
+    RgbCompositePngNotFoundError,
+    RgbCompositeService,
+    UnsupportedRgbPresetError,
+)
 from app.services.scene_service import (
     BandKeyDuplicateError,
     GeometryValidationError,
@@ -69,7 +80,7 @@ def _raise_index_compute_http(exc: Exception, *, scene_id: UUID) -> NoReturn:
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"AOI {exc} not found" if str(exc) else "AOI not found",
         ) from exc
-    if isinstance(exc, UnsupportedIndexError):
+    if isinstance(exc, (UnsupportedIndexError, UnsupportedRgbPresetError)):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc),
@@ -96,13 +107,14 @@ def _raise_index_compute_http(exc: Exception, *, scene_id: UUID) -> NoReturn:
             DerivedGeotiffNotFoundError,
             CroppedGeotiffNotFoundError,
             CroppedPreviewPngNotFoundError,
+            RgbCompositePngNotFoundError,
         ),
     ):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc),
         ) from exc
-    if isinstance(exc, IndexAoiCropConflictError):
+    if isinstance(exc, (IndexAoiCropConflictError, RgbCompositeExistsError)):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(exc),
@@ -546,6 +558,102 @@ def get_scene_index_aoi_map_overlay(
         UnsupportedIndexError,
         CroppedGeotiffNotFoundError,
         CroppedPreviewPngNotFoundError,
+        RasterFileNotFoundError,
+        RasterPathError,
+        RasterReadError,
+        IndexMapOverlayError,
+    ) as exc:
+        _raise_index_compute_http(exc, scene_id=scene_id)
+
+
+@router.post(
+    "/{scene_id}/rgb-composites/preview",
+    response_model=RgbCompositePreviewResult,
+)
+def create_scene_rgb_composite_preview(
+    scene_id: UUID,
+    payload: RgbCompositePreviewRequest,
+    db: Session = Depends(get_db),
+) -> RgbCompositePreviewResult:
+    """Generate an RGB composite PNG from scene bands (Fase 9H).
+
+    Resolves spectral roles via sensor band maps, applies percentile stretch,
+    and writes ``derived/scenes/{scene_id}/rgb/{preset}.png``.
+    """
+    service = RgbCompositeService(db)
+    try:
+        return service.create_preview(scene_id, payload)
+    except (
+        SceneNotFoundError,
+        UnsupportedRgbPresetError,
+        MissingRequiredBandError,
+        IncompatibleRasterBandsError,
+        RgbCompositeExistsError,
+        RasterFileNotFoundError,
+        RasterPathError,
+        RasterReadError,
+        PreviewWriteError,
+    ) as exc:
+        _raise_index_compute_http(exc, scene_id=scene_id)
+
+
+@router.get(
+    "/{scene_id}/rgb-composites/{preset}/preview.png",
+    response_class=FileResponse,
+    responses={
+        200: {
+            "content": {"image/png": {}},
+            "description": "Existing RGB composite PNG (inline)",
+        },
+        404: {"description": "Unsupported preset or RGB PNG missing"},
+    },
+)
+def get_scene_rgb_composite_preview_png(
+    scene_id: UUID,
+    preset: str,
+) -> FileResponse:
+    """Serve an existing RGB composite PNG (does not regenerate)."""
+    service = RgbCompositeService()
+    normalized = preset.strip().lower()
+    try:
+        path = service.resolve_preview_png(scene_id, preset)
+    except (
+        UnsupportedRgbPresetError,
+        RgbCompositePngNotFoundError,
+        RasterPathError,
+    ) as exc:
+        _raise_index_compute_http(exc, scene_id=scene_id)
+
+    return FileResponse(
+        path,
+        media_type="image/png",
+        filename=f"{normalized}.png",
+        content_disposition_type="inline",
+    )
+
+
+@router.get(
+    "/{scene_id}/rgb-composites/{preset}/map-overlay",
+    response_model=RgbCompositeMapOverlayResult,
+)
+def get_scene_rgb_composite_map_overlay(
+    scene_id: UUID,
+    preset: str,
+    db: Session = Depends(get_db),
+) -> RgbCompositeMapOverlayResult:
+    """Return MapLibre image-overlay metadata for an RGB composite PNG.
+
+    Georeferences from a source band of the preset; ``image_url`` points at the
+    existing preview PNG. Does not generate tiles or missing assets.
+    """
+    service = RgbCompositeService(db)
+    try:
+        return service.get_map_overlay(scene_id, preset)
+    except (
+        SceneNotFoundError,
+        UnsupportedRgbPresetError,
+        MissingRequiredBandError,
+        RgbCompositePngNotFoundError,
         RasterFileNotFoundError,
         RasterPathError,
         RasterReadError,

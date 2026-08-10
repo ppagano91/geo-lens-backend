@@ -103,6 +103,22 @@ def test_build_derived_aoi_asset_path() -> None:
         storage.build_derived_aoi_asset_path(scene_id, "  ", "ndvi", "tif")
 
 
+def test_build_derived_rgb_asset_path() -> None:
+    scene_id = uuid4()
+    storage = AssetStorageService(".")
+
+    assert (
+        storage.build_derived_rgb_asset_path(scene_id, "true_color", "png")
+        == f"derived/scenes/{scene_id}/rgb/true_color.png"
+    )
+    assert (
+        storage.build_derived_rgb_asset_path(scene_id, "SWIR_Urban", ".png")
+        == f"derived/scenes/{scene_id}/rgb/swir_urban.png"
+    )
+    with pytest.raises(AssetStorageError, match="preset"):
+        storage.build_derived_rgb_asset_path(scene_id, "  ", "png")
+
+
 def test_build_uploaded_scene_dir() -> None:
     scene_slug = uuid4()
     storage = AssetStorageService(".")
