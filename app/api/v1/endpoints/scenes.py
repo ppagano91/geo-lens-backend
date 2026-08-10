@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.schemas.band import BandRead
+from app.schemas.derived_asset import DerivedAssetRead
 from app.schemas.index_compute import (
     IndexAoiCropMapOverlayResult,
     IndexAoiCropRequest,
@@ -33,6 +34,7 @@ from app.services.index_aoi_crop_service import (
     IndexAoiReprojectionError,
 )
 from app.services.aoi_service import AoiNotFoundError
+from app.services.derived_asset_service import DerivedAssetService
 from app.services.index_map_overlay_service import (
     IndexMapOverlayError,
     IndexMapOverlayService,
@@ -204,6 +206,40 @@ def list_scene_bands(scene_id: UUID, db: Session = Depends(get_db)) -> list[Band
         ) from exc
 
 
+@router.get("/{scene_id}/derived-assets", response_model=list[DerivedAssetRead])
+def list_scene_derived_assets(
+    scene_id: UUID,
+    asset_type: str | None = Query(
+        default=None,
+        description=(
+            "Optional filter: index, index_aoi_crop, rgb_composite, rgb_composite_aoi"
+        ),
+    ),
+    limit: int = Query(default=100, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    include_inactive: bool = Query(
+        default=False,
+        description="If true, include logically deactivated catalog rows",
+    ),
+    db: Session = Depends(get_db),
+) -> list[DerivedAssetRead]:
+    """List derived products registered for a scene (paths + metadata only)."""
+    service = DerivedAssetService(db)
+    try:
+        return service.list_for_scene(
+            scene_id,
+            asset_type=asset_type,
+            limit=limit,
+            offset=offset,
+            include_inactive=include_inactive,
+        )
+    except SceneNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Scene {scene_id} not found",
+        ) from exc
+
+
 @router.post(
     "/{scene_id}/indices/ndvi/compute",
     response_model=NdviComputeResult,
@@ -287,9 +323,10 @@ def compute_and_save_scene_index(
 def create_scene_index_preview(
     scene_id: UUID,
     index_key: str,
+    db: Session = Depends(get_db),
 ) -> IndexPreviewResult:
     """Generate a PNG preview from an existing derived index GeoTIFF."""
-    service = IndexPreviewService()
+    service = IndexPreviewService(db)
     try:
         return service.create_preview(scene_id, index_key)
     except (

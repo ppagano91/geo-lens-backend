@@ -58,6 +58,7 @@ from app.schemas.index_compute import (
     NdviComputeResult,
 )
 from app.services.asset_storage_service import AssetStorageService
+from app.services.derived_asset_service import DerivedAssetService
 from app.services.scene_service import SceneNotFoundError
 
 # Sentinel-2 keys (default sensor; kept for Fase 7B imports / tests).
@@ -198,6 +199,25 @@ class LocalIndexComputeService:
             nodata=DEFAULT_INDEX_NODATA,
         )
         base = self._to_compute_result(scene_id, prepared)
+        DerivedAssetService(self.repository.db).create_or_update_derived_asset(
+            scene_id=scene_id,
+            asset_type="index",
+            product_key=prepared.spec.key,
+            asset_path=asset_path,
+            crs=prepared.reference.crs,
+            width=prepared.reference.width,
+            height=prepared.reference.height,
+            nodata=str(DEFAULT_INDEX_NODATA),
+            dtype="float32",
+            stats=base.stats.model_dump(),
+            metadata={
+                "index_display_name": prepared.spec.display_name,
+                "bands_used": {
+                    role: {"band_key": band.band_key, "band_id": str(band.id)}
+                    for role, band in prepared.role_bands.items()
+                },
+            },
+        )
         return IndexComputeSaveResult(
             scene_id=base.scene_id,
             index=base.index,

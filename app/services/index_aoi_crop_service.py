@@ -42,6 +42,7 @@ from app.schemas.index_compute import (
 )
 from app.services.aoi_service import AoiNotFoundError, AoiService
 from app.services.asset_storage_service import AssetStorageService
+from app.services.derived_asset_service import DerivedAssetService
 from app.services.geometry import GeometryValidationError
 from app.services.index_map_overlay_service import (
     IndexMapOverlayError,
@@ -239,6 +240,23 @@ class IndexAoiCropService:
 
         height, width = int(band.shape[0]), int(band.shape[1])
         stats = self._compute_stats(data_for_stats)
+
+        DerivedAssetService(self._db).create_or_update_derived_asset(
+            scene_id=scene_id,
+            aoi_id=aoi_id,
+            asset_type="index_aoi_crop",
+            product_key=spec.key,
+            asset_path=output_tif,
+            preview_path=png_path,
+            update_preview_path=True,
+            crs=crs_str,
+            width=width,
+            height=height,
+            nodata=str(nodata),
+            dtype="float32",
+            stats=stats.model_dump(),
+            metadata={"index_display_name": spec.display_name},
+        )
 
         return IndexAoiCropResult(
             scene_id=scene_id,

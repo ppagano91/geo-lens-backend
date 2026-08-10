@@ -7,8 +7,9 @@ Fase 9H.1: crop source bands by a saved AOI first (``rasterio.mask``), then
 stretch only the cropped window. Georef for AOI overlays is stored in a
 ``.georef.json`` sidecar (same folder reserved for a future RGB GeoTIFF).
 
-Does not write multiband GeoTIFF stacks, register RGB in DB, or touch index
-compute.
+Fase 9I: registers catalog rows in ``raster_derived_assets`` (paths + metadata
+only; never PNG bytes). Does not write multiband GeoTIFF stacks or touch
+index compute.
 """
 
 from __future__ import annotations
@@ -54,6 +55,7 @@ from app.schemas.rgb_composite import (
 )
 from app.services.aoi_service import AoiNotFoundError, AoiService
 from app.services.asset_storage_service import AssetStorageService
+from app.services.derived_asset_service import DerivedAssetService
 from app.services.geometry import GeometryValidationError
 from app.services.index_aoi_crop_service import IndexAoiReprojectionError
 from app.services.index_map_overlay_service import (
@@ -276,6 +278,28 @@ class RgbCompositeService:
         }
         reference = red_arr
 
+        if self._db is not None:
+            DerivedAssetService(self._db).create_or_update_derived_asset(
+                scene_id=scene_id,
+                asset_type="rgb_composite",
+                product_key=spec.key,
+                asset_path=asset_path,
+                preview_path=asset_path,
+                update_preview_path=True,
+                crs=reference.crs,
+                width=reference.width,
+                height=reference.height,
+                dtype="uint8",
+                metadata={
+                    "preset": spec.key,
+                    "sensor": sensor,
+                    "bands_used": bands_used,
+                    "stretch": request.stretch,
+                    "p_min": request.p_min,
+                    "p_max": request.p_max,
+                },
+            )
+
         return RgbCompositePreviewResult(
             scene_id=scene_id,
             preset=spec.key,
@@ -386,7 +410,7 @@ class RgbCompositeService:
             ref_crop.width,
             Affine(*ref_crop.transform),
         )
-        self._write_georef_sidecar(
+        georef_path = self._write_georef_sidecar(
             scene_id,
             aoi_id,
             spec.key,
@@ -404,6 +428,31 @@ class RgbCompositeService:
             channel: role_bands[spectral_role].band_key
             for channel, spectral_role in display_roles.items()
         }
+
+        if self._db is not None:
+            DerivedAssetService(self._db).create_or_update_derived_asset(
+                scene_id=scene_id,
+                aoi_id=aoi_id,
+                asset_type="rgb_composite_aoi",
+                product_key=spec.key,
+                asset_path=asset_path,
+                preview_path=asset_path,
+                georef_path=georef_path,
+                update_preview_path=True,
+                update_georef_path=True,
+                crs=ref_crop.crs,
+                width=ref_crop.width,
+                height=ref_crop.height,
+                dtype="uint8",
+                metadata={
+                    "preset": spec.key,
+                    "sensor": sensor,
+                    "bands_used": bands_used,
+                    "stretch": request.stretch,
+                    "p_min": request.p_min,
+                    "p_max": request.p_max,
+                },
+            )
 
         return RgbCompositeAoiPreviewResult(
             scene_id=scene_id,

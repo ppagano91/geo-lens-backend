@@ -3,14 +3,17 @@
 Fase 7E: create PNG from float32 GeoTIFF under DATA_ROOT/derived/scenes/.
 Fase 7E.1: resolve an existing PNG for HTTP serving (no regeneration).
 Fase 8C: resolve existing GeoTIFF / PNG for attachment download.
+Fase 9I: optionally register/update ``preview_path`` in raster_derived_assets.
 
-Does not recompute indices, touch the DB, or modify compute / compute-and-save.
+Does not recompute indices or modify compute / compute-and-save formulas.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 from uuid import UUID
+
+from sqlalchemy.orm import Session
 
 from app.raster.preview import (
     PreviewWriteError,
@@ -30,6 +33,7 @@ from app.schemas.index_compute import (
     IndexPreviewResult,
 )
 from app.services.asset_storage_service import AssetStorageService
+from app.services.derived_asset_service import DerivedAssetService
 from app.services.local_index_compute_service import (
     LOCAL_INDEX_REGISTRY,
     UnsupportedIndexError,
@@ -109,7 +113,12 @@ class CroppedPreviewPngNotFoundError(Exception):
 class IndexPreviewService:
     """Orchestrate derived GeoTIFF → RGBA PNG preview for a scene index."""
 
-    def __init__(self, data_root: Path | str | None = None) -> None:
+    def __init__(
+        self,
+        db: Session | None = None,
+        data_root: Path | str | None = None,
+    ) -> None:
+        self._db = db
         self._storage = AssetStorageService(data_root)
 
     @property
@@ -141,6 +150,22 @@ class IndexPreviewService:
             nodata=DEFAULT_INDEX_NODATA,
         )
         resolved = write_preview_png(output_asset, self.data_root, rgba)
+
+        if self._db is not None:
+            DerivedAssetService(self._db).create_or_update_derived_asset(
+                scene_id=scene_id,
+                asset_type="index",
+                product_key=spec.key,
+                asset_path=input_asset,
+                preview_path=output_asset,
+                update_preview_path=True,
+                crs=raster.crs,
+                width=raster.width,
+                height=raster.height,
+                nodata=str(DEFAULT_INDEX_NODATA),
+                dtype="float32",
+                metadata={"index_display_name": spec.display_name},
+            )
 
         return IndexPreviewResult(
             scene_id=scene_id,
