@@ -1,4 +1,4 @@
-"""Local scene ingest endpoints (Fase 9A / 9D)."""
+"""Local scene ingest endpoints (Fase 9A / 9D / 9K)."""
 
 from typing import Optional
 
@@ -48,8 +48,13 @@ def ingest_local_scene(
 ) -> LocalSceneIngestResult:
     """Register ``raster_scenes`` + ``raster_bands`` from a folder under DATA_ROOT.
 
-    Initial support: Landsat 8 Collection 2 L2 Surface Reflectance
-    (``SR_B2``…``SR_B7``). Optional ``MTL.txt`` enriches metadata.
+    Supported sensors:
+
+    * Landsat 8 Collection 2 L2 Surface Reflectance (``SR_B2``…``SR_B7``);
+      optional ``MTL.txt`` enriches metadata.
+    * Sentinel-2 L2A / simplified local set at 10 m (``B02``, ``B03``, ``B04``,
+      ``B08``). Optional ``B11``/``B12`` only if already aligned to the 10 m grid.
+
     Dev/admin mode: folder must already exist under storage.
     """
     service = LocalSceneIngestService(db)
@@ -63,17 +68,19 @@ def ingest_local_scene(
     "/upload-scene",
     response_model=LocalSceneIngestResult,
     status_code=status.HTTP_201_CREATED,
-    summary="Upload Landsat 8 band files and register a scene",
+    summary="Upload Landsat 8 or Sentinel-2 band files and register a scene",
 )
 async def upload_scene(
     files: list[UploadFile] = File(
         ...,
-        description="GeoTIFF bands (.tif/.tiff) and optional MTL (.txt)",
+        description=(
+            "GeoTIFF bands (.tif/.tiff); optional MTL (.txt) for Landsat 8"
+        ),
     ),
     source: str = Form(
         ...,
-        description="Sensor/source hint (currently only landsat-8)",
-        examples=["landsat-8"],
+        description="Sensor/source hint: landsat-8 or sentinel-2",
+        examples=["landsat-8", "sentinel-2"],
     ),
     name: Optional[str] = Form(
         default=None,

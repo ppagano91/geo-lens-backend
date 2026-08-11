@@ -184,13 +184,37 @@ def test_upload_unsupported_source_returns_422(
 
     response = client.post(
         UPLOAD_URL,
-        data={"source": "sentinel-2"},
+        data={"source": "modis"},
         files=_landsat_upload_files(),
     )
 
     assert response.status_code == 422
-    assert "landsat-8" in response.json()["detail"].lower()
+    detail = response.json()["detail"].lower()
+    assert "landsat-8" in detail
+    assert "sentinel-2" in detail
 
+
+@requires_database
+def test_upload_sentinel2_source_accepted(
+    client, tmp_path: Path, monkeypatch
+) -> None:
+    """Fase 9K: sentinel-2 is a supported upload source (see full suite)."""
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    monkeypatch.setattr(settings, "data_root", str(data_root))
+
+    # Landsat files with sentinel-2 source should fail on missing B0x bands,
+    # not on unsupported source.
+    response = client.post(
+        UPLOAD_URL,
+        data={"source": "sentinel-2"},
+        files=_landsat_upload_files(with_mtl=False),
+    )
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert "Missing required" in detail
+    assert "B02" in detail or "B08" in detail
+    assert "supports source" not in detail.lower()
 
 @requires_database
 def test_upload_file_too_large_returns_422(

@@ -22,8 +22,8 @@ class LocalSceneIngestRequest(BaseModel):
         ...,
         min_length=1,
         max_length=100,
-        description="Sensor/source hint (e.g. landsat-8)",
-        examples=["landsat-8"],
+        description="Sensor/source hint (landsat-8 or sentinel-2)",
+        examples=["landsat-8", "sentinel-2"],
     )
     name: Optional[str] = Field(
         default=None,

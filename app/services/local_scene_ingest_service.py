@@ -1,9 +1,16 @@
-"""Local GeoTIFF scene ingest under DATA_ROOT (Fase 9A / 9D).
+"""Local GeoTIFF scene ingest under DATA_ROOT (Fase 9A / 9D / 9K).
 
 Registers ``raster_scenes`` + ``raster_bands`` from a folder of co-registered
-bands. Initial support: Landsat 8 Collection 2 Level-2 Surface Reflectance
-(``SR_B2``…``SR_B7``). Supports path-based ingest (9A) and UI upload (9D).
-No STAC, tiles, or AOI crop.
+bands. Supported sensors:
+
+* Landsat 8 Collection 2 Level-2 Surface Reflectance (``SR_B2``…``SR_B7``)
+* Sentinel-2 L2A / simplified local set at 10 m (``B02``, ``B03``, ``B04``, ``B08``)
+
+Optional Sentinel-2 SWIR bands (``B11``, ``B12`` at 20 m) are registered only
+when they share CRS / size / transform with the 10 m grid; otherwise they are
+skipped with a clear warning (no resampling in this phase).
+
+Supports path-based ingest (9A) and UI upload (9D/9K). No STAC, tiles, or AOI crop.
 """
 
 from __future__ import annotations
@@ -32,6 +39,8 @@ from app.raster.readers import (
 from app.raster.sensors import (
     LANDSAT_8_BAND_MAP,
     SENSOR_LANDSAT_8,
+    SENSOR_SENTINEL_2,
+    SENTINEL_2_BAND_MAP,
     detect_sensor,
     normalize_sensor_token,
     resolve_band_key,
@@ -55,6 +64,10 @@ UPLOAD_GEOTIFF_SUFFIXES = {".tif", ".tiff"}
 UPLOAD_MTL_SUFFIXES = {".txt"}
 UPLOAD_ALLOWED_SUFFIXES = UPLOAD_GEOTIFF_SUFFIXES | UPLOAD_MTL_SUFFIXES
 
+SUPPORTED_INGEST_SENSORS: frozenset[str] = frozenset(
+    {SENSOR_LANDSAT_8, SENSOR_SENTINEL_2}
+)
+
 LANDSAT_8_REQUIRED_BANDS: tuple[str, ...] = (
     "SR_B2",
     "SR_B3",
@@ -64,8 +77,21 @@ LANDSAT_8_REQUIRED_BANDS: tuple[str, ...] = (
     "SR_B7",
 )
 
+SENTINEL_2_REQUIRED_BANDS: tuple[str, ...] = (
+    "B02",
+    "B03",
+    "B04",
+    "B08",
+)
+
+# Native 20 m SWIR — only kept when already aligned to the 10 m grid.
+SENTINEL_2_OPTIONAL_BANDS: tuple[str, ...] = (
+    "B11",
+    "B12",
+)
+
 LANDSAT_8_BAND_INFO: dict[str, tuple[str, str, int, str]] = {
-    # band_key → (band_name, description, oli_band, wavelength role)
+    # band_key → (band_name, description, native_band_number, wavelength role)
     "SR_B2": ("Blue", "Landsat 8 OLI Surface Reflectance Blue (band 2)", 2, "blue"),
     "SR_B3": ("Green", "Landsat 8 OLI Surface Reflectance Green (band 3)", 3, "green"),
     "SR_B4": ("Red", "Landsat 8 OLI Surface Reflectance Red (band 4)", 4, "red"),
@@ -74,7 +100,26 @@ LANDSAT_8_BAND_INFO: dict[str, tuple[str, str, int, str]] = {
     "SR_B7": ("SWIR2", "Landsat 8 OLI Surface Reflectance SWIR2 (band 7)", 7, "swir2"),
 }
 
-# Match native short names and full USGS product filenames.
+SENTINEL_2_BAND_INFO: dict[str, tuple[str, str, int, str]] = {
+    "B02": ("Blue", "Sentinel-2 MSI Blue (B02, 10 m)", 2, "blue"),
+    "B03": ("Green", "Sentinel-2 MSI Green (B03, 10 m)", 3, "green"),
+    "B04": ("Red", "Sentinel-2 MSI Red (B04, 10 m)", 4, "red"),
+    "B08": ("NIR", "Sentinel-2 MSI NIR (B08, 10 m)", 8, "nir"),
+    "B11": ("SWIR1", "Sentinel-2 MSI SWIR1 (B11, 20 m)", 11, "swir1"),
+    "B12": ("SWIR2", "Sentinel-2 MSI SWIR2 (B12, 20 m)", 12, "swir2"),
+}
+
+SENSOR_PLATFORM_LABEL: dict[str, str] = {
+    SENSOR_LANDSAT_8: "Landsat-8",
+    SENSOR_SENTINEL_2: "Sentinel-2",
+}
+
+SENSOR_REF_BAND: dict[str, str] = {
+    SENSOR_LANDSAT_8: "SR_B4",
+    SENSOR_SENTINEL_2: "B04",
+}
+
+# Match native short names and full USGS / ESA product filenames.
 _LANDSAT_SR_BAND_RE = re.compile(
     r"(?:^|[_-])SR_B([2-7])(?:[_.-]|$)",
     re.IGNORECASE,
@@ -157,16 +202,16 @@ class LocalSceneIngestService:
         name: Optional[str] = None,
         overwrite: bool = False,
     ) -> LocalSceneIngestResult:
-        """Save uploaded bands under storage and register the scene (9D)."""
+        """Save uploaded bands under storage and register the scene (9D / 9K)."""
         if not files:
             raise LocalIngestError("No files uploaded; attach GeoTIFF bands (.tif/.tiff)")
 
         source_sensor = normalize_sensor_token(source) if source else None
-        if source_sensor != SENSOR_LANDSAT_8:
+        if source_sensor not in SUPPORTED_INGEST_SENSORS:
             raise LocalIngestError(
                 (
-                    f"Upload ingest currently supports source='landsat-8' only; "
-                    f"got '{source}'."
+                    "Upload ingest supports source='landsat-8' or "
+                    f"source='sentinel-2'; got '{source}'."
                 )
             )
 
@@ -176,6 +221,7 @@ class LocalSceneIngestService:
         scene_dir = self._storage.resolve_write_path(relative_scene_path)
         scene_dir.mkdir(parents=True, exist_ok=False)
 
+        phase = "9K" if source_sensor == SENSOR_SENTINEL_2 else "9D"
         try:
             for filename, content in prepared:
                 dest = scene_dir / filename
@@ -187,7 +233,7 @@ class LocalSceneIngestService:
                 name=name,
                 overwrite=overwrite,
                 ingest_method="upload-scene",
-                phase="9D",
+                phase=phase,
             )
         except Exception:
             # Drop orphaned upload folder when registration fails.
@@ -216,26 +262,65 @@ class LocalSceneIngestService:
                 f"No GeoTIFF files found under scene_path '{relative_scene_path}'"
             )
 
-        mtl_meta, mtl_path = self._load_mtl(scene_dir, warnings)
         discovered = self._discover_bands(geotiffs, relative_scene_path, warnings)
         sensor = self._detect_ingest_sensor(
             source=source,
-            mtl=mtl_meta,
+            mtl=None,
             discovered_keys=set(discovered),
             warnings=warnings,
         )
 
-        if sensor != SENSOR_LANDSAT_8:
+        if sensor not in SUPPORTED_INGEST_SENSORS:
             raise LocalIngestError(
                 (
-                    f"Local ingest currently supports landsat-8 only; "
+                    "Local ingest currently supports landsat-8 and sentinel-2; "
                     f"detected sensor '{sensor}'. Pass source='landsat-8' "
-                    f"with SR_B2…SR_B7 GeoTIFFs."
+                    "(SR_B2…SR_B7) or source='sentinel-2' (B02/B03/B04/B08)."
                 )
             )
 
-        required = self._require_landsat_bands(discovered)
-        band_meta = self._read_and_validate_bands(required)
+        # Landsat MTL enrichment only; Sentinel-2 uses SAFE/other metadata later.
+        mtl_meta: Optional[MtlMetadata] = None
+        mtl_path: Optional[Path] = None
+        if sensor == SENSOR_LANDSAT_8:
+            mtl_meta, mtl_path = self._load_mtl(scene_dir, warnings)
+            effective_phase = phase
+        else:
+            # Sentinel-2 path/upload ingest is Fase 9K.
+            effective_phase = "9K" if phase in ("9A", "9D") else phase
+
+        if sensor == SENSOR_LANDSAT_8:
+            required = self._require_bands(
+                discovered,
+                LANDSAT_8_REQUIRED_BANDS,
+                product_label="Landsat 8 Surface Reflectance",
+            )
+            band_meta = self._read_and_validate_bands(
+                required, ref_key=SENSOR_REF_BAND[SENSOR_LANDSAT_8]
+            )
+            registered_order = list(LANDSAT_8_REQUIRED_BANDS)
+            bands_for_create = required
+        else:
+            required = self._require_bands(
+                discovered,
+                SENTINEL_2_REQUIRED_BANDS,
+                product_label="Sentinel-2 (10 m)",
+            )
+            band_meta = self._read_and_validate_bands(
+                required, ref_key=SENSOR_REF_BAND[SENSOR_SENTINEL_2]
+            )
+            optional_meta = self._resolve_optional_sentinel_swir(
+                discovered,
+                ref_meta=band_meta[SENSOR_REF_BAND[SENSOR_SENTINEL_2]],
+                warnings=warnings,
+            )
+            band_meta.update(optional_meta)
+            registered_order = list(SENTINEL_2_REQUIRED_BANDS) + [
+                key for key in SENTINEL_2_OPTIONAL_BANDS if key in optional_meta
+            ]
+            bands_for_create = {
+                key: discovered[key] for key in registered_order
+            }
 
         existing = self.repository.find_by_ingest_scene_path(relative_scene_path)
         overwritten = False
@@ -258,10 +343,11 @@ class LocalSceneIngestService:
                 )
             )
 
+        ref_key = SENSOR_REF_BAND[sensor]
         acquisition_date = self._resolve_acquisition_date(
             mtl=mtl_meta,
             scene_dir=scene_dir,
-            sample_band=required["SR_B4"].path,
+            sample_band=bands_for_create[ref_key].path,
             warnings=warnings,
         )
         resolved_name = self._resolve_name(
@@ -270,20 +356,21 @@ class LocalSceneIngestService:
             scene_dir=scene_dir,
             relative_scene_path=relative_scene_path,
         )
-        footprint = self._footprint_from_raster(band_meta["SR_B4"])
+        footprint = self._footprint_from_raster(band_meta[ref_key])
         scene_metadata = self._build_scene_metadata(
             sensor=sensor,
             relative_scene_path=relative_scene_path,
             mtl=mtl_meta,
             mtl_path=mtl_path,
             band_meta=band_meta,
+            ref_key=ref_key,
             ingest_method=ingest_method,
-            phase=phase,
+            phase=effective_phase,
         )
 
         create_payload = SceneCreate(
             name=resolved_name,
-            source=SENSOR_LANDSAT_8,
+            source=sensor,
             acquisition_date=acquisition_date,
             cloud_cover=(
                 Decimal(str(mtl_meta.cloud_cover))
@@ -293,33 +380,23 @@ class LocalSceneIngestService:
             footprint=footprint,
             metadata=scene_metadata,
             bands=[
-                self._band_create(band_key, discovered_band, band_meta[band_key])
-                for band_key, discovered_band in required.items()
+                self._band_create(
+                    sensor, band_key, bands_for_create[band_key], band_meta[band_key]
+                )
+                for band_key in registered_order
             ],
         )
         created = self.scene_service.create(create_payload)
 
+        band_info = self._band_info_for_sensor(sensor)
         registered = [
-            IngestedBandInfo(
+            self._ingested_band_info(
                 band_key=band_key,
-                band_name=LANDSAT_8_BAND_INFO[band_key][0],
-                asset_path=required[band_key].relative_asset_path,
-                width=int(band_meta[band_key].width or 0),
-                height=int(band_meta[band_key].height or 0),
-                crs=band_meta[band_key].crs,
-                dtype=band_meta[band_key].dtype,
-                nodata=(
-                    str(int(band_meta[band_key].nodata))
-                    if band_meta[band_key].nodata is not None
-                    and float(band_meta[band_key].nodata).is_integer()
-                    else (
-                        str(band_meta[band_key].nodata)
-                        if band_meta[band_key].nodata is not None
-                        else None
-                    )
-                ),
+                band_name=band_info[band_key][0],
+                discovered=bands_for_create[band_key],
+                meta=band_meta[band_key],
             )
-            for band_key in LANDSAT_8_REQUIRED_BANDS
+            for band_key in registered_order
         ]
 
         return LocalSceneIngestResult(
@@ -558,76 +635,188 @@ class LocalSceneIngestService:
             return source_sensor
 
         detected = detect_sensor(source=source, metadata=meta or None)
-        if detected != SENSOR_LANDSAT_8:
-            # Band-name heuristic.
-            if discovered_keys & set(LANDSAT_8_BAND_MAP.values()):
-                warnings.append(
-                    IngestionWarning(
-                        code="sensor_inferred_from_bands",
-                        title="Sensor inferido",
-                        description=(
-                            "Sensor inferido como landsat-8 a partir de los "
-                            "nombres de archivo SR_B*."
-                        ),
-                        severity="info",
-                    )
+        if detected == SENSOR_LANDSAT_8:
+            return detected
+
+        landsat_keys = set(LANDSAT_8_BAND_MAP.values())
+        sentinel_keys = set(SENTINEL_2_BAND_MAP.values())
+        if discovered_keys & landsat_keys:
+            warnings.append(
+                IngestionWarning(
+                    code="sensor_inferred_from_bands",
+                    title="Sensor inferido",
+                    description=(
+                        "Sensor inferido como landsat-8 a partir de los "
+                        "nombres de archivo SR_B*."
+                    ),
+                    severity="info",
                 )
-                return SENSOR_LANDSAT_8
+            )
+            return SENSOR_LANDSAT_8
+        if discovered_keys & sentinel_keys:
+            warnings.append(
+                IngestionWarning(
+                    code="sensor_inferred_from_bands",
+                    title="Sensor inferido",
+                    description=(
+                        "Sensor inferido como sentinel-2 a partir de los "
+                        "nombres de archivo B0* / B1*."
+                    ),
+                    severity="info",
+                )
+            )
+            return SENSOR_SENTINEL_2
         return detected
+
+    @staticmethod
+    def _require_bands(
+        discovered: dict[str, _DiscoveredBand],
+        required_keys: Sequence[str],
+        *,
+        product_label: str,
+    ) -> dict[str, _DiscoveredBand]:
+        missing = [key for key in required_keys if key not in discovered]
+        if missing:
+            raise LocalIngestError(
+                f"Missing required {product_label} bands: "
+                + ", ".join(missing)
+                + f". Found: {', '.join(sorted(discovered)) or '(none)'}"
+            )
+        return {key: discovered[key] for key in required_keys}
 
     def _require_landsat_bands(
         self, discovered: dict[str, _DiscoveredBand]
     ) -> dict[str, _DiscoveredBand]:
-        missing = [key for key in LANDSAT_8_REQUIRED_BANDS if key not in discovered]
-        if missing:
-            raise LocalIngestError(
-                "Missing required Landsat 8 Surface Reflectance bands: "
-                + ", ".join(missing)
-                + f". Found: {', '.join(sorted(discovered)) or '(none)'}"
-            )
-        return {key: discovered[key] for key in LANDSAT_8_REQUIRED_BANDS}
+        """Backward-compatible wrapper used by older tests/callers."""
+        return self._require_bands(
+            discovered,
+            LANDSAT_8_REQUIRED_BANDS,
+            product_label="Landsat 8 Surface Reflectance",
+        )
 
     def _read_and_validate_bands(
-        self, bands: dict[str, _DiscoveredBand]
+        self,
+        bands: dict[str, _DiscoveredBand],
+        *,
+        ref_key: str,
     ) -> dict[str, RasterMetadata]:
         metas: dict[str, RasterMetadata] = {}
         for band_key, discovered in bands.items():
-            try:
-                meta = read_raster_metadata(
-                    discovered.relative_asset_path, self.data_root
-                )
-            except (RasterFileNotFoundError, RasterReadError, RasterPathError) as exc:
-                raise LocalIngestError(
-                    f"Cannot read band {band_key} ({discovered.path.name}): {exc}"
-                ) from exc
+            metas[band_key] = self._read_single_band_meta(band_key, discovered)
 
-            if meta.count != 1:
-                raise LocalIngestError(
-                    f"Band {band_key} must be a single-band GeoTIFF; "
-                    f"got count={meta.count} ({discovered.path.name})"
-                )
-            metas[band_key] = meta
+        if ref_key not in metas:
+            raise LocalIngestError(
+                f"Reference band {ref_key} is required for grid validation"
+            )
 
-        ref_key = "SR_B4"
         ref = metas[ref_key]
         for band_key, meta in metas.items():
             if band_key == ref_key:
                 continue
-            if meta.crs != ref.crs:
-                raise LocalIngestError(
-                    f"Band CRS mismatch: {ref_key} has {ref.crs}, "
-                    f"{band_key} has {meta.crs}"
-                )
-            if meta.width != ref.width or meta.height != ref.height:
-                raise LocalIngestError(
-                    f"Band size mismatch: {ref_key} is {ref.width}x{ref.height}, "
-                    f"{band_key} is {meta.width}x{meta.height}"
-                )
-            if meta.transform != ref.transform:
-                raise LocalIngestError(
-                    f"Band transform mismatch between {ref_key} and {band_key}"
-                )
+            self._assert_aligned(ref_key, ref, band_key, meta)
         return metas
+
+    def _read_single_band_meta(
+        self, band_key: str, discovered: _DiscoveredBand
+    ) -> RasterMetadata:
+        try:
+            meta = read_raster_metadata(
+                discovered.relative_asset_path, self.data_root
+            )
+        except (RasterFileNotFoundError, RasterReadError, RasterPathError) as exc:
+            raise LocalIngestError(
+                f"Cannot read band {band_key} ({discovered.path.name}): {exc}"
+            ) from exc
+
+        if meta.count != 1:
+            raise LocalIngestError(
+                f"Band {band_key} must be a single-band GeoTIFF; "
+                f"got count={meta.count} ({discovered.path.name})"
+            )
+        return meta
+
+    @staticmethod
+    def _assert_aligned(
+        ref_key: str,
+        ref: RasterMetadata,
+        band_key: str,
+        meta: RasterMetadata,
+    ) -> None:
+        if meta.crs != ref.crs:
+            raise LocalIngestError(
+                f"Band CRS mismatch: {ref_key} has {ref.crs}, "
+                f"{band_key} has {meta.crs}"
+            )
+        if meta.width != ref.width or meta.height != ref.height:
+            raise LocalIngestError(
+                f"Band size mismatch: {ref_key} is {ref.width}x{ref.height}, "
+                f"{band_key} is {meta.width}x{meta.height}"
+            )
+        if meta.transform != ref.transform:
+            raise LocalIngestError(
+                f"Band transform mismatch between {ref_key} and {band_key}"
+            )
+
+    def _resolve_optional_sentinel_swir(
+        self,
+        discovered: dict[str, _DiscoveredBand],
+        *,
+        ref_meta: RasterMetadata,
+        warnings: list[IngestionWarning],
+    ) -> dict[str, RasterMetadata]:
+        """Accept B11/B12 only when co-registered with the 10 m reference grid.
+
+        Misaligned native 20 m rasters are skipped with a warning so NBR/NDMI
+        stay unavailable until a later resampling phase.
+        """
+        accepted: dict[str, RasterMetadata] = {}
+        skipped: list[str] = []
+
+        for band_key in SENTINEL_2_OPTIONAL_BANDS:
+            if band_key not in discovered:
+                continue
+            discovered_band = discovered[band_key]
+            try:
+                meta = self._read_single_band_meta(band_key, discovered_band)
+                self._assert_aligned(
+                    SENSOR_REF_BAND[SENSOR_SENTINEL_2],
+                    ref_meta,
+                    band_key,
+                    meta,
+                )
+            except LocalIngestError as exc:
+                skipped.append(discovered_band.path.name)
+                warnings.append(
+                    IngestionWarning(
+                        code="sentinel_swir_not_aligned",
+                        title=f"{band_key} no alineada (20 m)",
+                        description=(
+                            f"Se detectó {band_key} pero no coincide con la grilla "
+                            f"de 10 m (CRS/tamaño/transform). No se registra en esta "
+                            f"fase (sin resampling 20 m → 10 m). NBR/NDMI quedan "
+                            f"deshabilitados para esta banda. Detalle: {exc.message}"
+                        ),
+                        items=[discovered_band.path.name],
+                        severity="warning",
+                    )
+                )
+                continue
+            accepted[band_key] = meta
+
+        if skipped:
+            warnings.append(
+                IngestionWarning(
+                    code="sentinel_swir_skipped",
+                    title="SWIR Sentinel-2 omitidas",
+                    description=(
+                        "B11/B12 a 20 m no se usan hasta resolver resampling. "
+                        "Índices NBR/NDMI no están compatibles con esta escena."
+                    ),
+                    items=skipped,
+                    severity="warning",
+                )
+            )
+        return accepted
 
     def _resolve_acquisition_date(
         self,
@@ -730,12 +919,14 @@ class LocalSceneIngestService:
         mtl: Optional[MtlMetadata],
         mtl_path: Optional[Path],
         band_meta: dict[str, RasterMetadata],
+        ref_key: str,
         ingest_method: str = "local-scene",
         phase: str = "9A",
     ) -> dict[str, Any]:
-        ref = band_meta["SR_B4"]
+        ref = band_meta[ref_key]
+        platform = SENSOR_PLATFORM_LABEL.get(sensor, sensor)
         meta: dict[str, Any] = {
-            "platform": "Landsat-8",
+            "platform": platform,
             "sensor": sensor,
             "ingest_scene_path": relative_scene_path,
             "ingest": {
@@ -751,7 +942,7 @@ class LocalSceneIngestService:
             "dtype": ref.dtype,
             "nodata": ref.nodata,
         }
-        if mtl:
+        if sensor == SENSOR_LANDSAT_8 and mtl:
             meta.update(mtl.as_dict())
             # Keep display platform consistent for detect_sensor / UI.
             meta["platform"] = "Landsat-8"
@@ -763,20 +954,60 @@ class LocalSceneIngestService:
                     ).as_posix()
                 except ValueError:
                     meta["mtl_path"] = mtl_path.name
-        else:
-            # product_id hint from folder when no MTL
+        elif sensor == SENSOR_LANDSAT_8:
             folder = Path(relative_scene_path).name
             if folder.upper().startswith("LC08"):
+                meta["product_id"] = folder
+        else:
+            folder = Path(relative_scene_path).name
+            upper = folder.upper()
+            if upper.startswith("S2") or "MSIL2A" in upper:
                 meta["product_id"] = folder
         return meta
 
     @staticmethod
+    def _band_info_for_sensor(sensor: str) -> dict[str, tuple[str, str, int, str]]:
+        if sensor == SENSOR_LANDSAT_8:
+            return LANDSAT_8_BAND_INFO
+        if sensor == SENSOR_SENTINEL_2:
+            return SENTINEL_2_BAND_INFO
+        raise LocalIngestError(f"No band info table for sensor '{sensor}'")
+
+    @staticmethod
+    def _ingested_band_info(
+        *,
+        band_key: str,
+        band_name: str,
+        discovered: _DiscoveredBand,
+        meta: RasterMetadata,
+    ) -> IngestedBandInfo:
+        nodata: Optional[str] = None
+        if meta.nodata is not None:
+            if float(meta.nodata).is_integer():
+                nodata = str(int(meta.nodata))
+            else:
+                nodata = str(meta.nodata)
+        return IngestedBandInfo(
+            band_key=band_key,
+            band_name=band_name,
+            asset_path=discovered.relative_asset_path,
+            width=int(meta.width or 0),
+            height=int(meta.height or 0),
+            crs=meta.crs,
+            dtype=meta.dtype,
+            nodata=nodata,
+        )
+
     def _band_create(
+        self,
+        sensor: str,
         band_key: str,
         discovered: _DiscoveredBand,
         meta: RasterMetadata,
     ) -> BandCreate:
-        name, description, oli_band, wavelength = LANDSAT_8_BAND_INFO[band_key]
+        name, description, native_band, wavelength = self._band_info_for_sensor(
+            sensor
+        )[band_key]
         nodata: Optional[str] = None
         if meta.nodata is not None:
             if float(meta.nodata).is_integer():
@@ -788,6 +1019,21 @@ class LocalSceneIngestService:
         if meta.resolution:
             resolution = Decimal(str(abs(meta.resolution[0])))
 
+        platform = SENSOR_PLATFORM_LABEL.get(sensor, sensor)
+        band_meta: dict[str, Any] = {
+            "platform": platform,
+            "wavelength": wavelength,
+            "width": meta.width,
+            "height": meta.height,
+            "crs": meta.crs,
+            "transform": meta.transform,
+            "bounds": meta.bounds,
+        }
+        if sensor == SENSOR_LANDSAT_8:
+            band_meta["oli_band"] = native_band
+        else:
+            band_meta["msi_band"] = native_band
+
         return BandCreate(
             band_key=band_key,
             band_name=name,
@@ -796,16 +1042,7 @@ class LocalSceneIngestService:
             asset_path=discovered.relative_asset_path,
             nodata=nodata,
             dtype=meta.dtype,
-            metadata={
-                "platform": "Landsat-8",
-                "oli_band": oli_band,
-                "wavelength": wavelength,
-                "width": meta.width,
-                "height": meta.height,
-                "crs": meta.crs,
-                "transform": meta.transform,
-                "bounds": meta.bounds,
-            },
+            metadata=band_meta,
         )
 
     @staticmethod
@@ -840,5 +1077,8 @@ __all__ = [
     "SceneAlreadyExistsError",
     "UploadedSceneFile",
     "LANDSAT_8_REQUIRED_BANDS",
+    "SENTINEL_2_REQUIRED_BANDS",
+    "SENTINEL_2_OPTIONAL_BANDS",
+    "SUPPORTED_INGEST_SENSORS",
     "UPLOAD_ALLOWED_SUFFIXES",
 ]
