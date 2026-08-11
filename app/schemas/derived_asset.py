@@ -46,7 +46,25 @@ class DerivedAssetRead(BaseModel):
     updated_at: datetime
 
 
+class DerivedAssetExistsResult(BaseModel):
+    """Physical presence of catalog path references under DATA_ROOT."""
+
+    asset_id: UUID
+    asset_exists: bool = Field(description="Primary product file exists")
+    preview_exists: bool = Field(
+        description="Preview file exists (False if no preview_path)",
+    )
+    georef_exists: bool = Field(
+        description="Georef sidecar exists (False if no georef_path)",
+    )
+    missing_paths: list[str] = Field(
+        default_factory=list,
+        description="Relative paths registered in the catalog but missing on disk",
+    )
+
+
 __all__ = [
+    "DerivedAssetExistsResult",
     "DerivedAssetRead",
     "DerivedAssetType",
 ]

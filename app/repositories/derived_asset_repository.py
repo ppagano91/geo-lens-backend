@@ -96,6 +96,7 @@ class DerivedAssetRepository:
         *,
         scene_id: UUID | None = None,
         asset_type: str | None = None,
+        product_key: str | None = None,
         aoi_id: UUID | None = None,
         limit: int = 50,
         offset: int = 0,
@@ -106,6 +107,8 @@ class DerivedAssetRepository:
             stmt = stmt.where(RasterDerivedAsset.scene_id == scene_id)
         if asset_type is not None:
             stmt = stmt.where(RasterDerivedAsset.asset_type == asset_type)
+        if product_key is not None:
+            stmt = stmt.where(RasterDerivedAsset.product_key == product_key)
         if aoi_id is not None:
             stmt = stmt.where(RasterDerivedAsset.aoi_id == aoi_id)
         if not include_inactive:
@@ -125,6 +128,16 @@ class DerivedAssetRepository:
         if asset.is_active:
             asset.is_active = False
             asset.deleted_at = datetime.now(timezone.utc)
+            self.db.add(asset)
+            self.db.commit()
+            self.db.refresh(asset)
+        return asset
+
+    def restore(self, asset: RasterDerivedAsset) -> RasterDerivedAsset:
+        """Reactivate a soft-deleted catalog row. Does not touch files."""
+        if not asset.is_active:
+            asset.is_active = True
+            asset.deleted_at = None
             self.db.add(asset)
             self.db.commit()
             self.db.refresh(asset)

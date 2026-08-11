@@ -441,3 +441,182 @@ def test_soft_delete_derived_asset(client, tmp_path: Path, monkeypatch) -> None:
     # Physical file remains.
     tif = data_root / f"derived/scenes/{scene_id}/ndvi.tif"
     assert tif.is_file()
+
+
+@requires_database
+def test_list_derived_assets_filters(
+    client, tmp_path: Path, monkeypatch
+) -> None:
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    monkeypatch.setattr(settings, "data_root", str(data_root))
+
+    band_dir = tmp_path / "bands"
+    band_dir.mkdir()
+    scene_id = _create_scene(client, _write_l8_stack(band_dir))
+    aoi_id = _create_aoi(client)
+
+    assert (
+        client.post(
+            f"/api/v1/scenes/{scene_id}/indices/ndvi/compute-and-save"
+        ).status_code
+        == 200
+    )
+    assert (
+        client.post(
+            f"/api/v1/scenes/{scene_id}/indices/ndwi/compute-and-save"
+        ).status_code
+        == 200
+    )
+    crop = client.post(
+        f"/api/v1/scenes/{scene_id}/indices/ndvi/crop-by-aoi",
+        json={"aoi_id": aoi_id, "overwrite": True, "generate_preview": True},
+    )
+    assert crop.status_code == 200, crop.text
+    assert (
+        client.post(
+            f"/api/v1/scenes/{scene_id}/rgb-composites/preview",
+            json={"preset": "true_color", "overwrite": True},
+        ).status_code
+        == 200
+    )
+
+    by_type = client.get(
+        f"/api/v1/scenes/{scene_id}/derived-assets",
+        params={"asset_type": "index"},
+    )
+    assert by_type.status_code == 200
+    rows = by_type.json()
+    assert len(rows) == 2
+    assert all(row["asset_type"] == "index" for row in rows)
+
+    by_product = client.get(
+        f"/api/v1/scenes/{scene_id}/derived-assets",
+        params={"product_key": "ndvi"},
+    )
+    assert by_product.status_code == 200
+    products = by_product.json()
+    assert len(products) == 2
+    assert {row["asset_type"] for row in products} == {"index", "index_aoi_crop"}
+
+    by_aoi = client.get(
+        f"/api/v1/scenes/{scene_id}/derived-assets",
+        params={"aoi_id": aoi_id},
+    )
+    assert by_aoi.status_code == 200
+    aoi_rows = by_aoi.json()
+    assert len(aoi_rows) == 1
+    assert aoi_rows[0]["aoi_id"] == aoi_id
+    assert aoi_rows[0]["asset_type"] == "index_aoi_crop"
+
+    limited = client.get(
+        f"/api/v1/scenes/{scene_id}/derived-assets",
+        params={"limit": 1, "offset": 0},
+    )
+    assert limited.status_code == 200
+    assert len(limited.json()) == 1
+
+    page2 = client.get(
+        f"/api/v1/scenes/{scene_id}/derived-assets",
+        params={"limit": 1, "offset": 1},
+    )
+    assert page2.status_code == 200
+    assert len(page2.json()) == 1
+    assert limited.json()[0]["id"] != page2.json()[0]["id"]
+
+
+@requires_database
+def test_include_inactive_and_restore(
+    client, tmp_path: Path, monkeypatch
+) -> None:
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    monkeypatch.setattr(settings, "data_root", str(data_root))
+
+    band_dir = tmp_path / "bands"
+    band_dir.mkdir()
+    scene_id = _create_scene(client, _write_ndvi_bands(band_dir))
+    assert (
+        client.post(
+            f"/api/v1/scenes/{scene_id}/indices/ndvi/compute-and-save"
+        ).status_code
+        == 200
+    )
+    asset_id = client.get(f"/api/v1/scenes/{scene_id}/derived-assets").json()[0]["id"]
+
+    assert client.delete(f"/api/v1/derived-assets/{asset_id}").status_code == 204
+    assert client.get(f"/api/v1/scenes/{scene_id}/derived-assets").json() == []
+
+    inactive = client.get(
+        f"/api/v1/scenes/{scene_id}/derived-assets",
+        params={"include_inactive": True},
+    )
+    assert inactive.status_code == 200
+    rows = inactive.json()
+    assert len(rows) == 1
+    assert rows[0]["id"] == asset_id
+    assert rows[0]["is_active"] is False
+    assert rows[0]["deleted_at"] is not None
+
+    restored = client.patch(f"/api/v1/derived-assets/{asset_id}/restore")
+    assert restored.status_code == 200, restored.text
+    body = restored.json()
+    assert body["id"] == asset_id
+    assert body["is_active"] is True
+    assert body["deleted_at"] is None
+
+    active_again = client.get(f"/api/v1/scenes/{scene_id}/derived-assets")
+    assert active_again.status_code == 200
+    assert len(active_again.json()) == 1
+    assert active_again.json()[0]["id"] == asset_id
+
+
+@requires_database
+def test_exists_detects_present_and_missing_files(
+    client, tmp_path: Path, monkeypatch
+) -> None:
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    monkeypatch.setattr(settings, "data_root", str(data_root))
+
+    band_dir = tmp_path / "bands"
+    band_dir.mkdir()
+    scene_id = _create_scene(client, _write_l8_stack(band_dir))
+    aoi_id = _create_aoi(client)
+
+    assert (
+        client.post(
+            f"/api/v1/scenes/{scene_id}/rgb-composites/preview-by-aoi",
+            json={
+                "aoi_id": aoi_id,
+                "preset": "true_color",
+                "overwrite": True,
+            },
+        ).status_code
+        == 200
+    )
+    row = client.get(
+        f"/api/v1/scenes/{scene_id}/derived-assets",
+        params={"asset_type": "rgb_composite_aoi"},
+    ).json()[0]
+    asset_id = row["id"]
+
+    present = client.get(f"/api/v1/derived-assets/{asset_id}/exists")
+    assert present.status_code == 200, present.text
+    body = present.json()
+    assert body["asset_id"] == asset_id
+    assert body["asset_exists"] is True
+    assert body["georef_exists"] is True
+    assert body["missing_paths"] == []
+
+    # Remove primary PNG; keep georef to exercise partial missing.
+    png = data_root / row["asset_path"]
+    assert png.is_file()
+    png.unlink()
+
+    missing = client.get(f"/api/v1/derived-assets/{asset_id}/exists")
+    assert missing.status_code == 200
+    miss = missing.json()
+    assert miss["asset_exists"] is False
+    assert miss["georef_exists"] is True
+    assert row["asset_path"] in miss["missing_paths"]

@@ -1,4 +1,4 @@
-"""Derived-asset catalog service (Fase 9I).
+"""Derived-asset catalog service (Fase 9I / 9J).
 
 Registers metadata + relative path references for products written under
 DATA_ROOT. Never stores GeoTIFF/PNG bytes in the database.
@@ -9,11 +9,16 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.derived_asset import RasterDerivedAsset
 from app.repositories.derived_asset_repository import DerivedAssetRepository
-from app.schemas.derived_asset import DerivedAssetRead
+from app.schemas.derived_asset import DerivedAssetExistsResult, DerivedAssetRead
+from app.services.asset_storage_service import (
+    AssetStorageError,
+    AssetStorageService,
+)
 from app.services.scene_service import SceneNotFoundError, SceneService
 
 
@@ -21,10 +26,15 @@ class DerivedAssetNotFoundError(Exception):
     pass
 
 
+class DerivedAssetConflictError(Exception):
+    """Restore would collide with an already-active catalog row."""
+
+
 class DerivedAssetService:
     def __init__(self, db: Session) -> None:
         self.db = db
         self.repository = DerivedAssetRepository(db)
+        self.storage = AssetStorageService()
 
     def create_or_update_derived_asset(
         self,
@@ -166,6 +176,7 @@ class DerivedAssetService:
         *,
         scene_id: UUID | None = None,
         asset_type: str | None = None,
+        product_key: str | None = None,
         aoi_id: UUID | None = None,
         limit: int = 50,
         offset: int = 0,
@@ -174,6 +185,7 @@ class DerivedAssetService:
         assets = self.repository.list(
             scene_id=scene_id,
             asset_type=asset_type.strip().lower() if asset_type else None,
+            product_key=product_key.strip().lower() if product_key else None,
             aoi_id=aoi_id,
             limit=limit,
             offset=offset,
@@ -186,6 +198,8 @@ class DerivedAssetService:
         scene_id: UUID,
         *,
         asset_type: str | None = None,
+        product_key: str | None = None,
+        aoi_id: UUID | None = None,
         limit: int = 100,
         offset: int = 0,
         include_inactive: bool = False,
@@ -195,14 +209,23 @@ class DerivedAssetService:
         return self.list_derived_assets(
             scene_id=scene_id,
             asset_type=asset_type,
+            product_key=product_key,
+            aoi_id=aoi_id,
             limit=limit,
             offset=offset,
             include_inactive=include_inactive,
         )
 
-    def get(self, asset_id: UUID) -> DerivedAssetRead:
+    def get(
+        self,
+        asset_id: UUID,
+        *,
+        include_inactive: bool = False,
+    ) -> DerivedAssetRead:
         asset = self.repository.get_by_id(asset_id)
-        if asset is None or not asset.is_active:
+        if asset is None:
+            raise DerivedAssetNotFoundError(str(asset_id))
+        if not include_inactive and not asset.is_active:
             raise DerivedAssetNotFoundError(str(asset_id))
         return self._to_read(asset)
 
@@ -212,6 +235,70 @@ class DerivedAssetService:
         if asset is None:
             raise DerivedAssetNotFoundError(str(asset_id))
         self.repository.soft_delete(asset)
+
+    def restore(self, asset_id: UUID) -> DerivedAssetRead:
+        """Reactivate a soft-deleted catalog row. Does not move or create files."""
+        asset = self.repository.get_by_id(asset_id)
+        if asset is None:
+            raise DerivedAssetNotFoundError(str(asset_id))
+        if asset.is_active:
+            return self._to_read(asset)
+
+        conflict = self.repository.find_by_scene_aoi_product(
+            asset.scene_id,
+            asset.asset_type,
+            asset.product_key,
+            aoi_id=asset.aoi_id,
+            include_inactive=False,
+        )
+        if conflict is not None and conflict.id != asset.id:
+            raise DerivedAssetConflictError(
+                f"An active derived asset already exists for "
+                f"scene={asset.scene_id} type={asset.asset_type} "
+                f"product={asset.product_key} aoi={asset.aoi_id}"
+            )
+
+        try:
+            restored = self.repository.restore(asset)
+        except IntegrityError as exc:
+            self.db.rollback()
+            raise DerivedAssetConflictError(
+                f"Cannot restore derived asset {asset_id}: unique conflict"
+            ) from exc
+        return self._to_read(restored)
+
+    def check_exists(self, asset_id: UUID) -> DerivedAssetExistsResult:
+        """Verify whether catalog path references exist under DATA_ROOT."""
+        asset = self.repository.get_by_id(asset_id)
+        if asset is None:
+            raise DerivedAssetNotFoundError(str(asset_id))
+
+        missing: list[str] = []
+        asset_exists = self._path_exists(asset.asset_path, missing)
+        preview_exists = True
+        if asset.preview_path:
+            preview_exists = self._path_exists(asset.preview_path, missing)
+        georef_exists = True
+        if asset.georef_path:
+            georef_exists = self._path_exists(asset.georef_path, missing)
+
+        return DerivedAssetExistsResult(
+            asset_id=asset.id,
+            asset_exists=asset_exists,
+            preview_exists=preview_exists,
+            georef_exists=georef_exists,
+            missing_paths=missing,
+        )
+
+    def _path_exists(self, relative_path: str, missing: list[str]) -> bool:
+        try:
+            if self.storage.exists(relative_path):
+                return True
+        except AssetStorageError:
+            missing.append(relative_path)
+            return False
+        missing.append(relative_path)
+        return False
 
     @staticmethod
     def _to_read(asset: RasterDerivedAsset) -> DerivedAssetRead:
@@ -241,5 +328,6 @@ class DerivedAssetService:
 __all__ = [
     "DerivedAssetService",
     "DerivedAssetNotFoundError",
+    "DerivedAssetConflictError",
     "SceneNotFoundError",
 ]

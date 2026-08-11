@@ -37,7 +37,7 @@ Omita los comandos que fallen porque el usuario o la base ya existen.
 ### 3. Habilitar PostGIS
 
 ```powershell
-psql -U postgres -d geochange -c "CREATE EXTENSION IF NOT EXISTS postgis;"
+psql -U postgres -d geolens -c "CREATE EXTENSION IF NOT EXISTS postgis;"
 ```
 
 ### 4. Configurar `.env`

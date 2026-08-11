@@ -215,6 +215,14 @@ def list_scene_derived_assets(
             "Optional filter: index, index_aoi_crop, rgb_composite, rgb_composite_aoi"
         ),
     ),
+    product_key: str | None = Query(
+        default=None,
+        description="Optional product key filter (e.g. ndvi, true_color)",
+    ),
+    aoi_id: UUID | None = Query(
+        default=None,
+        description="Optional AOI filter (exact match)",
+    ),
     limit: int = Query(default=100, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     include_inactive: bool = Query(
@@ -229,6 +237,8 @@ def list_scene_derived_assets(
         return service.list_for_scene(
             scene_id,
             asset_type=asset_type,
+            product_key=product_key,
+            aoi_id=aoi_id,
             limit=limit,
             offset=offset,
             include_inactive=include_inactive,
