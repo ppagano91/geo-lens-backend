@@ -91,7 +91,8 @@ def test_detect_unknown_when_sentinel_level_missing(
     assert meta.product_level == "unknown"
     assert meta.radiometry_type == "unknown"
     assert meta.scale_applied is False
-    assert meta.radiometry_warning == UNKNOWN_RADIOMETRY_WARNING
+    assert meta.radiometry_warning is not None
+    assert "MSIL1C" in meta.radiometry_warning or "SAFE" in meta.radiometry_warning
 
 
 def test_apply_landsat_scaling_preserves_nodata(service: RadiometryService) -> None:

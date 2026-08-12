@@ -47,6 +47,7 @@ from app.raster.sensors import (
     normalize_sensor_token,
     resolve_band_key,
 )
+from app.raster.sentinel_safe import is_safe_metadata_filename
 from app.repositories.scene_repository import SceneRepository
 from app.schemas.band import BandCreate
 from app.schemas.ingest import (
@@ -69,7 +70,10 @@ from app.services.scene_service import SceneService
 GEOTIFF_SUFFIXES = {".tif", ".tiff", ".TIF", ".TIFF"}
 UPLOAD_GEOTIFF_SUFFIXES = {".tif", ".tiff"}
 UPLOAD_MTL_SUFFIXES = {".txt"}
-UPLOAD_ALLOWED_SUFFIXES = UPLOAD_GEOTIFF_SUFFIXES | UPLOAD_MTL_SUFFIXES
+UPLOAD_SAFE_METADATA_SUFFIXES = {".xml", ".safe"}
+UPLOAD_ALLOWED_SUFFIXES = (
+    UPLOAD_GEOTIFF_SUFFIXES | UPLOAD_MTL_SUFFIXES | UPLOAD_SAFE_METADATA_SUFFIXES
+)
 
 SUPPORTED_INGEST_SENSORS: frozenset[str] = frozenset(
     {SENSOR_LANDSAT_8, SENSOR_SENTINEL_2}
@@ -213,6 +217,8 @@ class LocalSceneIngestService:
             overwrite=payload.overwrite,
             ingest_method="local-scene",
             phase="9A",
+            product_level=payload.product_level,
+            source_product_id=payload.source_product_id,
         )
 
     def ingest_upload(
@@ -222,8 +228,10 @@ class LocalSceneIngestService:
         source: str,
         name: Optional[str] = None,
         overwrite: bool = False,
+        product_level: Optional[str] = None,
+        source_product_id: Optional[str] = None,
     ) -> LocalSceneIngestResult:
-        """Save uploaded bands under storage and register the scene (9D / 9K / 9L)."""
+        """Save uploaded bands under storage and register the scene (9D / 9K / 9L / 9M.1)."""
         if not files:
             raise LocalIngestError("No files uploaded; attach GeoTIFF bands (.tif/.tiff)")
 
@@ -255,6 +263,8 @@ class LocalSceneIngestService:
                 overwrite=overwrite,
                 ingest_method="upload-scene",
                 phase=phase,
+                product_level=product_level,
+                source_product_id=source_product_id,
             )
         except Exception:
             # Drop orphaned upload folder when registration fails.
@@ -271,6 +281,8 @@ class LocalSceneIngestService:
         overwrite: bool = False,
         ingest_method: str = "local-scene",
         phase: str = "9A",
+        product_level: Optional[str] = None,
+        source_product_id: Optional[str] = None,
     ) -> LocalSceneIngestResult:
         """Shared register path for an already-prepared scene folder under DATA_ROOT."""
         warnings: list[IngestionWarning] = []
@@ -311,7 +323,7 @@ class LocalSceneIngestService:
             effective_phase = phase
         else:
             # Sentinel-2 path/upload ingest with optional SWIR alignment is Fase 9L.
-            effective_phase = "9L" if phase in ("9A", "9D", "9K", "9L") else phase
+            effective_phase = "9L" if phase in ("9A", "9D", "9K", "9L", "9M", "9M.1") else phase
             scene_id = uuid4()
 
         # Resolve overwrite before writing aligned derived assets.
@@ -401,29 +413,32 @@ class LocalSceneIngestService:
             ingest_method=ingest_method,
             phase=effective_phase,
         )
+
+        safe_files: list[Path] = []
+        if sensor == SENSOR_SENTINEL_2:
+            safe_files = self._radiometry.discover_safe_metadata(scene_dir)
+
         radiometry = self._radiometry.detect_scene_radiometry(
             source=sensor,
             name=resolved_name,
             metadata=scene_metadata,
             band_keys=registered_order,
             product_id=(
-                scene_metadata.get("product_id")
+                source_product_id
+                or scene_metadata.get("product_id")
                 or scene_metadata.get("landsat_product_id")
                 or resolved_name
             ),
+            product_level=product_level,
+            source_product_id=source_product_id,
+            scene_path=relative_scene_path,
+            metadata_files=safe_files,
+            prefer_stored=False,
         )
         scene_metadata = self._radiometry.merge_into_scene_metadata(
             scene_metadata, radiometry
         )
-        if radiometry.radiometry_warning:
-            warnings.append(
-                IngestionWarning(
-                    code="radiometry_unknown",
-                    title="Radiometría no determinada",
-                    description=radiometry.radiometry_warning,
-                    severity="warning",
-                )
-            )
+        self._append_radiometry_warnings(warnings, radiometry)
 
         create_payload = SceneCreate(
             id=scene_id,
@@ -475,6 +490,7 @@ class LocalSceneIngestService:
             ),
             metadata=created.metadata,
             radiometry=radiometry.to_info(),
+            metadata_files_detected=list(radiometry.metadata_files_detected),
             overwritten=overwritten,
         )
 
@@ -491,7 +507,7 @@ class LocalSceneIngestService:
             if suffix not in UPLOAD_ALLOWED_SUFFIXES:
                 raise LocalIngestError(
                     f"Invalid file extension for '{item.filename}'. "
-                    f"Allowed: .tif, .tiff, and .txt (MTL)."
+                    f"Allowed: .tif, .tiff, .txt (MTL), .xml / .safe (Sentinel metadata)."
                 )
 
             content = item.content
@@ -1117,6 +1133,63 @@ class LocalSceneIngestService:
         if sensor == SENSOR_SENTINEL_2:
             return SENTINEL_2_BAND_INFO
         raise LocalIngestError(f"No band info table for sensor '{sensor}'")
+
+    @staticmethod
+    def _append_radiometry_warnings(
+        warnings: list[IngestionWarning],
+        radiometry,
+    ) -> None:
+        source = (radiometry.radiometry_source or "").lower()
+        if radiometry.product_level == "unknown":
+            warnings.append(
+                IngestionWarning(
+                    code="radiometry_unknown",
+                    title="Radiometry could not be determined automatically",
+                    description=(
+                        radiometry.radiometry_warning
+                        or (
+                            "Indicate MSIL1C/MSIL2A manually or upload SAFE metadata."
+                        )
+                    ),
+                    severity="warning",
+                )
+            )
+            return
+        if source == "manual_override":
+            warnings.append(
+                IngestionWarning(
+                    code="radiometry_manual_override",
+                    title="Radiometría indicada manualmente",
+                    description=(
+                        f"product_level={radiometry.product_level}; "
+                        f"tipo={radiometry.radiometry_type}."
+                    ),
+                    severity="info",
+                )
+            )
+        elif source == "manual_product_id":
+            warnings.append(
+                IngestionWarning(
+                    code="radiometry_detected_from_product_id",
+                    title="Radiometría detectada desde Product ID",
+                    description=radiometry.source_product_id,
+                    severity="info",
+                )
+            )
+        elif source == "sentinel_metadata":
+            warnings.append(
+                IngestionWarning(
+                    code="radiometry_detected_from_safe_metadata",
+                    title="Radiometría detectada desde metadata SAFE",
+                    description=(
+                        ", ".join(radiometry.metadata_files_detected)
+                        if radiometry.metadata_files_detected
+                        else None
+                    ),
+                    items=list(radiometry.metadata_files_detected),
+                    severity="info",
+                )
+            )
 
     @staticmethod
     def _ingested_band_info(

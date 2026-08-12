@@ -1,4 +1,4 @@
-"""Schemas for local scene ingest (Fase 9A)."""
+"""Schemas for local scene ingest (Fase 9A / 9M.1)."""
 
 from __future__ import annotations
 
@@ -6,9 +6,9 @@ from datetime import date
 from typing import Any, Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
-from app.schemas.radiometry import RadiometryInfo
+from app.schemas.radiometry import IngestProductLevel, RadiometryInfo
 
 
 class LocalSceneIngestRequest(BaseModel):
@@ -37,6 +37,50 @@ class LocalSceneIngestRequest(BaseModel):
         default=False,
         description="If true, replace an existing scene previously ingested from the same path",
     )
+    product_level: Optional[IngestProductLevel] = Field(
+        default=None,
+        description=(
+            "Optional radiometry product-level override "
+            "(sentinel_l1c / sentinel_l2a / landsat_l2 / unknown)"
+        ),
+    )
+    source_product_id: Optional[str] = Field(
+        default=None,
+        min_length=1,
+        max_length=255,
+        description=(
+            "Optional original product id, e.g. "
+            "S2B_MSIL1C_20181226T141039_N0207_R110_T20JLL_20181226T172720"
+        ),
+    )
+
+    @field_validator("source_product_id")
+    @classmethod
+    def _strip_product_id(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        text = value.strip()
+        return text or None
+
+    @model_validator(mode="after")
+    def _validate_product_level_for_source(self) -> LocalSceneIngestRequest:
+        if self.product_level is None:
+            return self
+        source = (self.source or "").strip().lower().replace("_", "-")
+        if source in {"sentinel-2", "sentinel2", "s2"}:
+            if self.product_level not in {"sentinel_l1c", "sentinel_l2a", "unknown"}:
+                raise ValueError(
+                    "For source=sentinel-2, product_level must be "
+                    "sentinel_l1c, sentinel_l2a, or unknown"
+                )
+        if source in {"landsat-8", "landsat8", "l8"} and self.product_level not in {
+            "landsat_l2",
+            "unknown",
+        }:
+            raise ValueError(
+                "For source=landsat-8, product_level must be landsat_l2 or unknown"
+            )
+        return self
 
 
 class IngestedBandInfo(BaseModel):
@@ -81,6 +125,7 @@ class LocalSceneIngestResult(BaseModel):
     available_indices: list[AvailableIndexInfo] = Field(default_factory=list)
     metadata: Optional[dict[str, Any]] = None
     radiometry: Optional[RadiometryInfo] = None
+    metadata_files_detected: list[str] = Field(default_factory=list)
     overwritten: bool = False
 
 
