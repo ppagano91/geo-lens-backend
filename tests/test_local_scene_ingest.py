@@ -79,7 +79,7 @@ def _stage_landsat_scene(
         if mismatch_size_for == key:
             data = np.full((3, 3), 100, dtype=np.uint16)
         else:
-            data = np.full((4, 4), 100 if key != "SR_B5" else 300, dtype=np.uint16)
+            data = np.full((4, 4), 10909 if key != "SR_B5" else 18182, dtype=np.uint16)
         _write_band(path, data)
 
     if with_mtl:
@@ -113,6 +113,11 @@ def test_ingest_landsat8_valid_scene(client, tmp_path: Path, monkeypatch) -> Non
     assert body["acquisition_date"] == "2026-05-10"
     assert body["metadata"]["platform"] == "Landsat-8"
     assert body["metadata"]["sensor"] == "landsat-8"
+    assert body["metadata"]["product_level"] == "landsat_l2"
+    assert body["metadata"]["radiometry_type"] == "surface_reflectance"
+    assert body["radiometry"]["product_level"] == "landsat_l2"
+    assert body["radiometry"]["radiometry_type"] == "surface_reflectance"
+    assert body["radiometry"]["scale_applied"] is True
     assert body["metadata"]["ingest_scene_path"] == scene_path
     assert {b["band_key"] for b in body["bands"]} == set(LANDSAT_KEYS)
     assert all(item["compatible"] for item in body["available_indices"])
@@ -222,7 +227,12 @@ def test_ingest_then_compute_ndvi(client, tmp_path: Path, monkeypatch) -> None:
     assert result["status"] == "computed"
     assert result["bands_used"]["red"]["band_key"] == "SR_B4"
     assert result["bands_used"]["nir"]["band_key"] == "SR_B5"
-    assert result["stats"]["mean"] == pytest.approx(0.5)
+    assert result["stats"]["mean"] == pytest.approx(0.5, abs=1e-4)
+    assert result["radiometry"]["product_level"] == "landsat_l2"
+    assert result["radiometry"]["radiometry_type"] == "surface_reflectance"
+    assert result["radiometry"]["scale_applied"] is True
+    assert result["radiometry"]["scale_factor"] == pytest.approx(0.0000275)
+    assert result["radiometry"]["offset"] == pytest.approx(-0.2)
 
 
 @requires_database

@@ -66,6 +66,7 @@ from app.services.local_index_compute_service import (
     IncompatibleRasterBandsError,
     MissingRequiredBandError,
 )
+from app.services.radiometry_service import RadiometryService
 from app.services.scene_service import SceneNotFoundError
 
 _WGS84 = "EPSG:4326"
@@ -208,6 +209,19 @@ class RgbCompositeService:
         self._db = db
         self.repository = SceneRepository(db) if db is not None else None
         self._storage = AssetStorageService(data_root)
+        self._radiometry = RadiometryService()
+
+    @property
+    def radiometry_service(self) -> RadiometryService:
+        service = getattr(self, "_radiometry", None)
+        if service is None:
+            service = RadiometryService()
+            self._radiometry = service
+        return service
+
+    def _maybe_db(self):
+        """DB session if constructed with one (unit stubs may omit ``_db``)."""
+        return getattr(self, "_db", None)
 
     @property
     def data_root(self) -> Path:
@@ -250,6 +264,11 @@ class RgbCompositeService:
         }
         self._validate_aligned(role_arrays)
 
+        radiometry = self.radiometry_service.detect_scene_radiometry(
+            scene,
+            bands=list(scene.bands),
+        )
+
         asset_path = self._storage.build_derived_rgb_asset_path(
             scene_id, spec.key, "png"
         )
@@ -260,13 +279,23 @@ class RgbCompositeService:
         green_arr = role_arrays[display_roles["green"]]
         blue_arr = role_arrays[display_roles["blue"]]
 
+        red_data = self.radiometry_service.apply_radiometric_scaling(
+            red_arr.data, red_arr.nodata, radiometry
+        )
+        green_data = self.radiometry_service.apply_radiometric_scaling(
+            green_arr.data, green_arr.nodata, radiometry
+        )
+        blue_data = self.radiometry_service.apply_radiometric_scaling(
+            blue_arr.data, blue_arr.nodata, radiometry
+        )
+
         rgba = render_rgb_rgba(
-            red_arr.data,
-            green_arr.data,
-            blue_arr.data,
-            red_nodata=red_arr.nodata,
-            green_nodata=green_arr.nodata,
-            blue_nodata=blue_arr.nodata,
+            red_data,
+            green_data,
+            blue_data,
+            red_nodata=None,
+            green_nodata=None,
+            blue_nodata=None,
             p_min=request.p_min,
             p_max=request.p_max,
         )
@@ -277,9 +306,10 @@ class RgbCompositeService:
             for channel, spectral_role in display_roles.items()
         }
         reference = red_arr
+        radiometry_meta = radiometry.as_nested_metadata()
 
-        if self._db is not None:
-            DerivedAssetService(self._db).create_or_update_derived_asset(
+        if self._maybe_db() is not None:
+            DerivedAssetService(self._maybe_db()).create_or_update_derived_asset(
                 scene_id=scene_id,
                 asset_type="rgb_composite",
                 product_key=spec.key,
@@ -297,6 +327,7 @@ class RgbCompositeService:
                     "stretch": request.stretch,
                     "p_min": request.p_min,
                     "p_max": request.p_max,
+                    **radiometry_meta,
                 },
             )
 
@@ -310,6 +341,7 @@ class RgbCompositeService:
             height=reference.height,
             crs=reference.crs,
             output=RgbCompositeOutputInfo(asset_path=asset_path),
+            radiometry=radiometry.to_info(),
         )
 
     def create_preview_by_aoi(
@@ -318,7 +350,7 @@ class RgbCompositeService:
         request: RgbCompositeAoiPreviewRequest,
     ) -> RgbCompositeAoiPreviewResult:
         """Crop source bands by AOI, then stretch RGB for the cropped window."""
-        if self._db is None or self.repository is None:
+        if self._maybe_db() is None or self.repository is None:
             raise RuntimeError(
                 "RgbCompositeService requires a DB session for preview-by-aoi"
             )
@@ -331,7 +363,7 @@ class RgbCompositeService:
         if scene is None or not scene.is_active:
             raise SceneNotFoundError(str(scene_id))
 
-        aoi = AoiService(self._db).get(aoi_id)
+        aoi = AoiService(self._maybe_db()).get(aoi_id)
         geometry = aoi.geometry
         if not geometry or geometry.get("type") not in {"Polygon", "MultiPolygon"}:
             raise GeometryValidationError(
@@ -348,6 +380,11 @@ class RgbCompositeService:
             role_bands[spectral_role] = self._require_band(
                 scene_id, bands_by_key, band_key
             )
+
+        radiometry = self.radiometry_service.detect_scene_radiometry(
+            scene,
+            bands=list(scene.bands),
+        )
 
         profiles = {
             role: self._read_band_profile(band)
@@ -393,10 +430,20 @@ class RgbCompositeService:
         green = cropped[display_roles["green"]]
         blue = cropped[display_roles["blue"]]
 
+        red_data = self.radiometry_service.apply_radiometric_scaling(
+            red.data, None, radiometry
+        )
+        green_data = self.radiometry_service.apply_radiometric_scaling(
+            green.data, None, radiometry
+        )
+        blue_data = self.radiometry_service.apply_radiometric_scaling(
+            blue.data, None, radiometry
+        )
+
         rgba = render_rgb_rgba(
-            red.data,
-            green.data,
-            blue.data,
+            red_data,
+            green_data,
+            blue_data,
             red_nodata=None,
             green_nodata=None,
             blue_nodata=None,
@@ -428,9 +475,10 @@ class RgbCompositeService:
             channel: role_bands[spectral_role].band_key
             for channel, spectral_role in display_roles.items()
         }
+        radiometry_meta = radiometry.as_nested_metadata()
 
-        if self._db is not None:
-            DerivedAssetService(self._db).create_or_update_derived_asset(
+        if self._maybe_db() is not None:
+            DerivedAssetService(self._maybe_db()).create_or_update_derived_asset(
                 scene_id=scene_id,
                 aoi_id=aoi_id,
                 asset_type="rgb_composite_aoi",
@@ -451,6 +499,7 @@ class RgbCompositeService:
                     "stretch": request.stretch,
                     "p_min": request.p_min,
                     "p_max": request.p_max,
+                    **radiometry_meta,
                 },
             )
 
@@ -465,6 +514,7 @@ class RgbCompositeService:
             height=ref_crop.height,
             crs=ref_crop.crs,
             output=RgbCompositeOutputInfo(asset_path=asset_path),
+            radiometry=radiometry.to_info(),
         )
 
     def resolve_preview_png(self, scene_id: UUID, preset: str) -> Path:

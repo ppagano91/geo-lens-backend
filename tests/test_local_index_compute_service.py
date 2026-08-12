@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 from uuid import uuid4
 
 import numpy as np
@@ -68,6 +69,7 @@ def _scene(*, bands: list, source: str = "local", metadata=None):
 class _FakeRepository:
     def __init__(self, scene) -> None:
         self._scene = scene
+        self.db = object()  # placeholder; DerivedAssetService is mocked in save tests
 
     def get_by_id(self, scene_id):
         if self._scene is None or self._scene.id != scene_id:
@@ -80,6 +82,14 @@ def _service_with_scene(scene, *, data_root: Path | None = None) -> LocalIndexCo
     service.repository = _FakeRepository(scene)
     service.data_root = data_root if data_root is not None else Path(".")
     return service
+
+
+def _patch_derived_assets(monkeypatch: pytest.MonkeyPatch) -> None:
+    mock_svc = MagicMock()
+    monkeypatch.setattr(
+        "app.services.local_index_compute_service.DerivedAssetService",
+        MagicMock(return_value=mock_svc),
+    )
 
 
 def test_compute_ndvi_success(tmp_path: Path) -> None:
@@ -255,7 +265,8 @@ def test_compute_index_missing_required_band_ndwi(tmp_path: Path) -> None:
         service.compute_index(scene.id, "ndwi")
 
 
-def test_compute_and_save_ndvi_success(tmp_path: Path) -> None:
+def test_compute_and_save_ndvi_success(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_derived_assets(monkeypatch)
     data_root = tmp_path / "data"
     data_root.mkdir()
     red_path = tmp_path / "B04.tif"
@@ -287,6 +298,7 @@ def test_compute_and_save_ndvi_success(tmp_path: Path) -> None:
     assert result.stats.valid_pixels == 24
     assert result.stats.nodata_pixels == 1
     assert result.stats.mean == pytest.approx(0.5)
+    assert result.radiometry is not None
     assert result.output.asset_path == expected_asset
     assert result.output.resolved_path == str(expected_path)
     assert result.output.nodata == DEFAULT_INDEX_NODATA
@@ -314,11 +326,13 @@ def test_compute_and_save_ndvi_success(tmp_path: Path) -> None:
 )
 def test_compute_and_save_other_indices(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     index_key: str,
     display: str,
     band_keys: tuple[str, str],
     roles: tuple[str, str],
 ) -> None:
+    _patch_derived_assets(monkeypatch)
     data_root = tmp_path / "data"
     data_root.mkdir()
     left_path = tmp_path / f"{band_keys[0]}.tif"
@@ -355,7 +369,10 @@ def test_compute_and_save_other_indices(
         assert dataset.read(1)[0, 0] == pytest.approx(0.5)
 
 
-def test_compute_and_save_overwrites_existing(tmp_path: Path) -> None:
+def test_compute_and_save_overwrites_existing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_derived_assets(monkeypatch)
     data_root = tmp_path / "data"
     data_root.mkdir()
     red_path = tmp_path / "B04.tif"

@@ -8,6 +8,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from app.schemas.radiometry import RadiometryInfo
+
 
 class LocalSceneIngestRequest(BaseModel):
     """Register a local GeoTIFF scene folder under DATA_ROOT."""
@@ -78,6 +80,7 @@ class LocalSceneIngestResult(BaseModel):
     warnings: list[IngestionWarning] = Field(default_factory=list)
     available_indices: list[AvailableIndexInfo] = Field(default_factory=list)
     metadata: Optional[dict[str, Any]] = None
+    radiometry: Optional[RadiometryInfo] = None
     overwritten: bool = False
 
 

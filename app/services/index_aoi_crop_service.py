@@ -57,6 +57,7 @@ from app.services.local_index_compute_service import (
     LOCAL_INDEX_REGISTRY,
     UnsupportedIndexError,
 )
+from app.services.radiometry_service import RadiometryService
 from app.services.scene_service import SceneNotFoundError, SceneService
 
 _WGS84 = "EPSG:4326"
@@ -100,6 +101,15 @@ class IndexAoiCropService:
     ) -> None:
         self._db = db
         self._storage = AssetStorageService(data_root)
+        self._radiometry = RadiometryService()
+
+    @property
+    def radiometry_service(self) -> RadiometryService:
+        service = getattr(self, "_radiometry", None)
+        if service is None:
+            service = RadiometryService()
+            self._radiometry = service
+        return service
 
     @property
     def data_root(self) -> Path:
@@ -241,7 +251,32 @@ class IndexAoiCropService:
         height, width = int(band.shape[0]), int(band.shape[1])
         stats = self._compute_stats(data_for_stats)
 
-        DerivedAssetService(self._db).create_or_update_derived_asset(
+        derived_svc = DerivedAssetService(self._db)
+        parent = derived_svc.find_by_scene_aoi_product(
+            scene_id,
+            "index",
+            spec.key,
+            aoi_id=None,
+        )
+        if (
+            parent is not None
+            and isinstance(parent.metadata, dict)
+            and isinstance(parent.metadata.get("radiometry"), dict)
+            and parent.metadata["radiometry"].get("product_level")
+        ):
+            radiometry = self.radiometry_service._coerce_radiometry(
+                parent.metadata["radiometry"]
+            )
+        else:
+            scene = SceneService(self._db).get(scene_id)
+            radiometry = self.radiometry_service.detect_scene_radiometry(
+                source=scene.source,
+                name=scene.name,
+                metadata=scene.metadata,
+            )
+
+        radiometry_meta = radiometry.as_nested_metadata()
+        derived_svc.create_or_update_derived_asset(
             scene_id=scene_id,
             aoi_id=aoi_id,
             asset_type="index_aoi_crop",
@@ -255,7 +290,10 @@ class IndexAoiCropService:
             nodata=str(nodata),
             dtype="float32",
             stats=stats.model_dump(),
-            metadata={"index_display_name": spec.display_name},
+            metadata={
+                "index_display_name": spec.display_name,
+                **radiometry_meta,
+            },
         )
 
         return IndexAoiCropResult(
@@ -275,6 +313,7 @@ class IndexAoiCropService:
                 geotiff_asset_path=output_tif,
                 png_asset_path=png_path,
             ),
+            radiometry=radiometry.to_info(),
         )
 
     def resolve_cropped_geotiff(

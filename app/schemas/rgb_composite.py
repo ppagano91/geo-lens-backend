@@ -7,6 +7,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from app.schemas.radiometry import RadiometryInfo
+
 RgbPresetKey = Literal[
     "true_color",
     "false_color_vegetation",
@@ -86,6 +88,7 @@ class RgbCompositePreviewResult(BaseModel):
     height: int
     crs: Optional[str] = None
     output: RgbCompositeOutputInfo
+    radiometry: Optional[RadiometryInfo] = None
 
 
 class RgbCompositeAoiPreviewRequest(RgbCompositePreviewRequest):
@@ -109,6 +112,7 @@ class RgbCompositeAoiPreviewResult(BaseModel):
     height: int
     crs: Optional[str] = None
     output: RgbCompositeOutputInfo
+    radiometry: Optional[RadiometryInfo] = None
 
 
 class RgbCompositeMapOverlayBounds(BaseModel):

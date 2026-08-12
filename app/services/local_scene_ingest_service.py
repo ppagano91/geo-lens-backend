@@ -63,6 +63,7 @@ from app.services.band_alignment_service import (
     BandAlignmentService,
 )
 from app.services.local_index_compute_service import LOCAL_INDEX_REGISTRY
+from app.services.radiometry_service import RadiometryService
 from app.services.scene_service import SceneService
 
 GEOTIFF_SUFFIXES = {".tif", ".tiff", ".TIF", ".TIFF"}
@@ -192,6 +193,7 @@ class LocalSceneIngestService:
         self.scene_service = SceneService(db)
         self._storage = AssetStorageService(data_root)
         self._alignment = BandAlignmentService(data_root)
+        self._radiometry = RadiometryService()
 
     @property
     def data_root(self) -> Path:
@@ -399,6 +401,29 @@ class LocalSceneIngestService:
             ingest_method=ingest_method,
             phase=effective_phase,
         )
+        radiometry = self._radiometry.detect_scene_radiometry(
+            source=sensor,
+            name=resolved_name,
+            metadata=scene_metadata,
+            band_keys=registered_order,
+            product_id=(
+                scene_metadata.get("product_id")
+                or scene_metadata.get("landsat_product_id")
+                or resolved_name
+            ),
+        )
+        scene_metadata = self._radiometry.merge_into_scene_metadata(
+            scene_metadata, radiometry
+        )
+        if radiometry.radiometry_warning:
+            warnings.append(
+                IngestionWarning(
+                    code="radiometry_unknown",
+                    title="Radiometría no determinada",
+                    description=radiometry.radiometry_warning,
+                    severity="warning",
+                )
+            )
 
         create_payload = SceneCreate(
             id=scene_id,
@@ -414,7 +439,11 @@ class LocalSceneIngestService:
             metadata=scene_metadata,
             bands=[
                 self._band_create(
-                    sensor, band_key, bands_for_create[band_key], band_meta[band_key]
+                    sensor,
+                    band_key,
+                    bands_for_create[band_key],
+                    band_meta[band_key],
+                    radiometry=radiometry,
                 )
                 for band_key in registered_order
             ],
@@ -445,6 +474,7 @@ class LocalSceneIngestService:
                 sensor, {b.band_key for b in registered}
             ),
             metadata=created.metadata,
+            radiometry=radiometry.to_info(),
             overwritten=overwritten,
         )
 
@@ -1076,7 +1106,7 @@ class LocalSceneIngestService:
         else:
             folder = Path(relative_scene_path).name
             upper = folder.upper()
-            if upper.startswith("S2") or "MSIL2A" in upper:
+            if upper.startswith("S2") or "MSIL1C" in upper or "MSIL2A" in upper:
                 meta["product_id"] = folder
         return meta
 
@@ -1120,6 +1150,8 @@ class LocalSceneIngestService:
         band_key: str,
         discovered: _DiscoveredBand,
         meta: RasterMetadata,
+        *,
+        radiometry=None,
     ) -> BandCreate:
         name, description, native_band, wavelength = self._band_info_for_sensor(
             sensor
@@ -1152,6 +1184,9 @@ class LocalSceneIngestService:
 
         if discovered.alignment_meta:
             band_meta.update(discovered.alignment_meta)
+
+        if radiometry is not None:
+            band_meta.update(self._radiometry.band_radiometry_slice(radiometry))
 
         return BandCreate(
             band_key=band_key,

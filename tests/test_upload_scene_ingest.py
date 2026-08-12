@@ -56,7 +56,7 @@ def _landsat_upload_files(
         if mismatch_size_for == key:
             data = np.full((3, 3), 100, dtype=np.uint16)
         else:
-            data = np.full((4, 4), 100 if key != "SR_B5" else 300, dtype=np.uint16)
+            data = np.full((4, 4), 10909 if key != "SR_B5" else 18182, dtype=np.uint16)
         files.append(
             ("files", (f"{key}.tif", _band_bytes(data), "image/tiff"))
         )
@@ -260,7 +260,9 @@ def test_upload_then_compute_ndvi(client, tmp_path: Path, monkeypatch) -> None:
     assert result["status"] == "computed"
     assert result["bands_used"]["red"]["band_key"] == "SR_B4"
     assert result["bands_used"]["nir"]["band_key"] == "SR_B5"
-    assert result["stats"]["mean"] == pytest.approx(0.5)
+    assert result["stats"]["mean"] == pytest.approx(0.5, abs=1e-4)
+    assert result["radiometry"]["product_level"] == "landsat_l2"
+    assert result["radiometry"]["scale_applied"] is True
 
 
 @requires_database
@@ -275,7 +277,7 @@ def test_local_scene_still_works_after_upload_endpoint(
     scene_dir = data_root / "sample" / "scenes" / "local_still_ok"
     scene_dir.mkdir(parents=True)
     for key in LANDSAT_KEYS:
-        data = np.full((4, 4), 100 if key != "SR_B5" else 300, dtype=np.uint16)
+        data = np.full((4, 4), 10909 if key != "SR_B5" else 18182, dtype=np.uint16)
         _write_band(scene_dir / f"{key}.tif", data)
 
     response = client.post(

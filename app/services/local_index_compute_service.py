@@ -59,6 +59,7 @@ from app.schemas.index_compute import (
 )
 from app.services.asset_storage_service import AssetStorageService
 from app.services.derived_asset_service import DerivedAssetService
+from app.services.radiometry_service import RadiometryMetadata, RadiometryService
 from app.services.scene_service import SceneNotFoundError
 
 # Sentinel-2 keys (default sensor; kept for Fase 7B imports / tests).
@@ -127,6 +128,7 @@ class _PreparedIndex:
     index_array: np.ndarray
     stats: IndexStats
     reference: RasterArray
+    radiometry: RadiometryMetadata
 
 
 class UnsupportedIndexError(Exception):
@@ -163,6 +165,16 @@ class LocalIndexComputeService:
     ) -> None:
         self.repository = SceneRepository(db)
         self._storage = AssetStorageService(data_root)
+        self._radiometry = RadiometryService()
+
+    @property
+    def radiometry_service(self) -> RadiometryService:
+        """Lazy accessor so unit-test stubs that use ``__new__`` still work."""
+        service = getattr(self, "_radiometry", None)
+        if service is None:
+            service = RadiometryService()
+            self._radiometry = service
+        return service
 
     @property
     def data_root(self) -> Path:
@@ -199,6 +211,7 @@ class LocalIndexComputeService:
             nodata=DEFAULT_INDEX_NODATA,
         )
         base = self._to_compute_result(scene_id, prepared)
+        radiometry_meta = prepared.radiometry.as_nested_metadata()
         DerivedAssetService(self.repository.db).create_or_update_derived_asset(
             scene_id=scene_id,
             asset_type="index",
@@ -216,6 +229,7 @@ class LocalIndexComputeService:
                     role: {"band_key": band.band_key, "band_id": str(band.id)}
                     for role, band in prepared.role_bands.items()
                 },
+                **radiometry_meta,
             },
         )
         return IndexComputeSaveResult(
@@ -230,6 +244,7 @@ class LocalIndexComputeService:
                 resolved_path=str(resolved),
                 nodata=DEFAULT_INDEX_NODATA,
             ),
+            radiometry=base.radiometry,
         )
 
     def _prepare_index(self, scene_id: UUID, index_key: str) -> _PreparedIndex:
@@ -255,8 +270,19 @@ class LocalIndexComputeService:
         }
         self._validate_aligned(role_arrays)
 
-        formula_args = [role_arrays[role].data for role in spec.formula_roles]
-        index_array = spec.formula(*formula_args)
+        radiometry = self.radiometry_service.detect_scene_radiometry(
+            scene,
+            bands=list(scene.bands),
+        )
+        scaled_args = [
+            self.radiometry_service.apply_radiometric_scaling(
+                role_arrays[role].data,
+                role_arrays[role].nodata,
+                radiometry,
+            )
+            for role in spec.formula_roles
+        ]
+        index_array = spec.formula(*scaled_args)
         stats = self._compute_stats(index_array)
         reference = next(iter(role_arrays.values()))
 
@@ -266,6 +292,7 @@ class LocalIndexComputeService:
             index_array=index_array,
             stats=stats,
             reference=reference,
+            radiometry=radiometry,
         )
 
     @staticmethod
@@ -298,6 +325,7 @@ class LocalIndexComputeService:
                 dtype="float32",
             ),
             stats=prepared.stats,
+            radiometry=prepared.radiometry.to_info(),
         )
 
     @staticmethod

@@ -81,19 +81,19 @@ def _scene_payload(*, bands: list[dict], name: str = "derived catalog test") -> 
 def _write_ndvi_bands(root: Path) -> list[dict]:
     red = root / "SR_B4.tif"
     nir = root / "SR_B5.tif"
-    _write_band(red, np.full((8, 8), 100, dtype=np.uint16))
-    _write_band(nir, np.full((8, 8), 300, dtype=np.uint16))
+    _write_band(red, np.full((8, 8), 10909, dtype=np.uint16))
+    _write_band(nir, np.full((8, 8), 18182, dtype=np.uint16))
     return [_band_entry("SR_B4", red), _band_entry("SR_B5", nir)]
 
 
 def _write_l8_stack(root: Path) -> list[dict]:
     defaults = {
-        "SR_B2": 80,
-        "SR_B3": 100,
-        "SR_B4": 120,
-        "SR_B5": 200,
-        "SR_B6": 150,
-        "SR_B7": 90,
+        "SR_B2": 10909,
+        "SR_B3": 10909,
+        "SR_B4": 10909,
+        "SR_B5": 18182,
+        "SR_B6": 10909,
+        "SR_B7": 10909,
     }
     bands: list[dict] = []
     for key in L8_BANDS:
@@ -185,6 +185,10 @@ def test_compute_and_save_registers_index_asset(
     assert row["height"] == 8
     assert isinstance(row["asset_path"], str)
     assert "bytes" not in (row.get("metadata") or {})
+    assert row["metadata"]["radiometry"]["product_level"] == "landsat_l2"
+    assert row["metadata"]["radiometry"]["radiometry_type"] == "surface_reflectance"
+    assert row["metadata"]["radiometry"]["scale_applied"] is True
+    assert response.json()["radiometry"]["scale_applied"] is True
 
 
 @requires_database

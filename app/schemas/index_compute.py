@@ -7,6 +7,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from app.schemas.radiometry import RadiometryInfo
+
 
 class IndexBandUsed(BaseModel):
     band_key: str
@@ -44,6 +46,7 @@ class IndexComputeResult(BaseModel):
     bands_used: dict[str, IndexBandUsed]
     raster: IndexRasterInfo
     stats: IndexStats
+    radiometry: Optional[RadiometryInfo] = None
 
 
 class IndexOutputInfo(BaseModel):
@@ -64,6 +67,7 @@ class IndexComputeSaveResult(BaseModel):
     raster: IndexRasterInfo
     stats: IndexStats
     output: IndexOutputInfo
+    radiometry: Optional[RadiometryInfo] = None
 
 
 class IndexPreviewInputInfo(BaseModel):
@@ -157,6 +161,7 @@ class IndexAoiCropResult(BaseModel):
     raster: IndexAoiCropRasterInfo
     stats: IndexStats
     output: IndexAoiCropOutputInfo
+    radiometry: Optional[RadiometryInfo] = None
 
 
 class IndexAoiCropMapOverlayResult(BaseModel):
