@@ -1,4 +1,4 @@
-"""Local GeoTIFF scene ingest under DATA_ROOT (Fase 9A / 9D / 9K).
+"""Local GeoTIFF scene ingest under DATA_ROOT (Fase 9A / 9D / 9K / 9L).
 
 Registers ``raster_scenes`` + ``raster_bands`` from a folder of co-registered
 bands. Supported sensors:
@@ -6,23 +6,25 @@ bands. Supported sensors:
 * Landsat 8 Collection 2 Level-2 Surface Reflectance (``SR_B2``…``SR_B7``)
 * Sentinel-2 L2A / simplified local set at 10 m (``B02``, ``B03``, ``B04``, ``B08``)
 
-Optional Sentinel-2 SWIR bands (``B11``, ``B12`` at 20 m) are registered only
-when they share CRS / size / transform with the 10 m grid; otherwise they are
-skipped with a clear warning (no resampling in this phase).
+Optional Sentinel-2 SWIR bands (``B11``, ``B12``, typically 20 m) are registered
+when already co-registered with the 10 m grid, or after bilinear resampling /
+alignment onto the reference 10 m grid (prefer ``B08``, else ``B04``). Aligned
+assets are written under ``derived/scenes/{scene_id}/aligned/`` without moving
+or deleting the originals.
 
-Supports path-based ingest (9A) and UI upload (9D/9K). No STAC, tiles, or AOI crop.
+Supports path-based ingest (9A) and UI upload (9D/9K/9L). No STAC, tiles, or AOI crop.
 """
 
 from __future__ import annotations
 
 import re
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Optional, Sequence
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from rasterio.warp import transform_bounds
 from sqlalchemy.orm import Session
@@ -56,6 +58,10 @@ from app.schemas.ingest import (
 )
 from app.schemas.scene import SceneCreate
 from app.services.asset_storage_service import AssetStorageError, AssetStorageService
+from app.services.band_alignment_service import (
+    BandAlignmentError,
+    BandAlignmentService,
+)
 from app.services.local_index_compute_service import LOCAL_INDEX_REGISTRY
 from app.services.scene_service import SceneService
 
@@ -84,11 +90,14 @@ SENTINEL_2_REQUIRED_BANDS: tuple[str, ...] = (
     "B08",
 )
 
-# Native 20 m SWIR — only kept when already aligned to the 10 m grid.
+# Native 20 m SWIR — aligned to 10 m when needed (Fase 9L).
 SENTINEL_2_OPTIONAL_BANDS: tuple[str, ...] = (
     "B11",
     "B12",
 )
+
+# Preferred 10 m reference for SWIR alignment (fallback: SENSOR_REF_BAND).
+SENTINEL_2_ALIGNMENT_REF_BAND = "B08"
 
 LANDSAT_8_BAND_INFO: dict[str, tuple[str, str, int, str]] = {
     # band_key → (band_name, description, native_band_number, wavelength role)
@@ -158,6 +167,14 @@ class _DiscoveredBand:
     band_key: str
     path: Path
     relative_asset_path: str
+    # Optional alignment / resampling metadata (Fase 9L).
+    alignment_meta: Optional[dict[str, Any]] = field(default=None)
+
+
+@dataclass(frozen=True)
+class _AlignedSwir:
+    discovered: _DiscoveredBand
+    meta: RasterMetadata
 
 
 @dataclass(frozen=True)
@@ -174,6 +191,7 @@ class LocalSceneIngestService:
         self.repository = SceneRepository(db)
         self.scene_service = SceneService(db)
         self._storage = AssetStorageService(data_root)
+        self._alignment = BandAlignmentService(data_root)
 
     @property
     def data_root(self) -> Path:
@@ -182,6 +200,7 @@ class LocalSceneIngestService:
     @data_root.setter
     def data_root(self, value: Path | str) -> None:
         self._storage = AssetStorageService(value)
+        self._alignment = BandAlignmentService(value)
 
     def ingest(self, payload: LocalSceneIngestRequest) -> LocalSceneIngestResult:
         """Register a scene from a folder already present under DATA_ROOT (9A)."""
@@ -202,7 +221,7 @@ class LocalSceneIngestService:
         name: Optional[str] = None,
         overwrite: bool = False,
     ) -> LocalSceneIngestResult:
-        """Save uploaded bands under storage and register the scene (9D / 9K)."""
+        """Save uploaded bands under storage and register the scene (9D / 9K / 9L)."""
         if not files:
             raise LocalIngestError("No files uploaded; attach GeoTIFF bands (.tif/.tiff)")
 
@@ -221,7 +240,7 @@ class LocalSceneIngestService:
         scene_dir = self._storage.resolve_write_path(relative_scene_path)
         scene_dir.mkdir(parents=True, exist_ok=False)
 
-        phase = "9K" if source_sensor == SENSOR_SENTINEL_2 else "9D"
+        phase = "9L" if source_sensor == SENSOR_SENTINEL_2 else "9D"
         try:
             for filename, content in prepared:
                 dest = scene_dir / filename
@@ -282,12 +301,38 @@ class LocalSceneIngestService:
         # Landsat MTL enrichment only; Sentinel-2 uses SAFE/other metadata later.
         mtl_meta: Optional[MtlMetadata] = None
         mtl_path: Optional[Path] = None
+        # Pre-allocate scene id so aligned SWIR assets can live under
+        # derived/scenes/{scene_id}/aligned/ before the DB insert (9L).
+        scene_id: Optional[UUID] = None
         if sensor == SENSOR_LANDSAT_8:
             mtl_meta, mtl_path = self._load_mtl(scene_dir, warnings)
             effective_phase = phase
         else:
-            # Sentinel-2 path/upload ingest is Fase 9K.
-            effective_phase = "9K" if phase in ("9A", "9D") else phase
+            # Sentinel-2 path/upload ingest with optional SWIR alignment is Fase 9L.
+            effective_phase = "9L" if phase in ("9A", "9D", "9K", "9L") else phase
+            scene_id = uuid4()
+
+        # Resolve overwrite before writing aligned derived assets.
+        existing = self.repository.find_by_ingest_scene_path(relative_scene_path)
+        overwritten = False
+        if existing is not None:
+            if not overwrite:
+                raise SceneAlreadyExistsError(
+                    relative_scene_path, str(existing.id)
+                )
+            self.scene_service.delete(existing.id)
+            overwritten = True
+            warnings.append(
+                IngestionWarning(
+                    code="scene_overwritten",
+                    title="Escena sobrescrita",
+                    description=(
+                        f"Se reemplazó la escena existente {existing.id} "
+                        f"para la ruta '{relative_scene_path}'."
+                    ),
+                    severity="info",
+                )
+            )
 
         if sensor == SENSOR_LANDSAT_8:
             required = self._require_bands(
@@ -309,9 +354,17 @@ class LocalSceneIngestService:
             band_meta = self._read_and_validate_bands(
                 required, ref_key=SENSOR_REF_BAND[SENSOR_SENTINEL_2]
             )
+            align_ref_key = (
+                SENTINEL_2_ALIGNMENT_REF_BAND
+                if SENTINEL_2_ALIGNMENT_REF_BAND in band_meta
+                else SENSOR_REF_BAND[SENSOR_SENTINEL_2]
+            )
+            assert scene_id is not None
             optional_meta = self._resolve_optional_sentinel_swir(
                 discovered,
-                ref_meta=band_meta[SENSOR_REF_BAND[SENSOR_SENTINEL_2]],
+                ref_key=align_ref_key,
+                ref_meta=band_meta[align_ref_key],
+                scene_id=scene_id,
                 warnings=warnings,
             )
             band_meta.update(optional_meta)
@@ -321,27 +374,6 @@ class LocalSceneIngestService:
             bands_for_create = {
                 key: discovered[key] for key in registered_order
             }
-
-        existing = self.repository.find_by_ingest_scene_path(relative_scene_path)
-        overwritten = False
-        if existing is not None:
-            if not overwrite:
-                raise SceneAlreadyExistsError(
-                    relative_scene_path, str(existing.id)
-                )
-            self.scene_service.delete(existing.id)
-            overwritten = True
-            warnings.append(
-                IngestionWarning(
-                    code="scene_overwritten",
-                    title="Escena sobrescrita",
-                    description=(
-                        f"Se reemplazó la escena existente {existing.id} "
-                        f"para la ruta '{relative_scene_path}'."
-                    ),
-                    severity="info",
-                )
-            )
 
         ref_key = SENSOR_REF_BAND[sensor]
         acquisition_date = self._resolve_acquisition_date(
@@ -369,6 +401,7 @@ class LocalSceneIngestService:
         )
 
         create_payload = SceneCreate(
+            id=scene_id,
             name=resolved_name,
             source=sensor,
             acquisition_date=acquisition_date,
@@ -761,16 +794,30 @@ class LocalSceneIngestService:
         self,
         discovered: dict[str, _DiscoveredBand],
         *,
+        ref_key: str,
         ref_meta: RasterMetadata,
+        scene_id: UUID,
         warnings: list[IngestionWarning],
     ) -> dict[str, RasterMetadata]:
-        """Accept B11/B12 only when co-registered with the 10 m reference grid.
+        """Accept B11/B12 when aligned, or resample 20 m → 10 m (Fase 9L).
 
-        Misaligned native 20 m rasters are skipped with a warning so NBR/NDMI
-        stay unavailable until a later resampling phase.
+        Already co-registered SWIR bands are registered as-is. Misaligned native
+        20 m rasters are bilinear-resampled onto the reference 10 m grid
+        (prefer B08) and registered with ``band_key`` B11/B12 pointing at the
+        aligned asset under ``derived/scenes/{scene_id}/aligned/``.
         """
         accepted: dict[str, RasterMetadata] = {}
-        skipped: list[str] = []
+        resampled_items: list[str] = []
+        detected_20m: list[str] = []
+
+        if ref_meta.width is None or ref_meta.height is None:
+            raise LocalIngestError(
+                f"Reference band {ref_key} is missing width/height for SWIR alignment"
+            )
+        if not ref_meta.transform:
+            raise LocalIngestError(
+                f"Reference band {ref_key} is missing transform for SWIR alignment"
+            )
 
         for band_key in SENTINEL_2_OPTIONAL_BANDS:
             if band_key not in discovered:
@@ -778,45 +825,113 @@ class LocalSceneIngestService:
             discovered_band = discovered[band_key]
             try:
                 meta = self._read_single_band_meta(band_key, discovered_band)
-                self._assert_aligned(
-                    SENSOR_REF_BAND[SENSOR_SENTINEL_2],
-                    ref_meta,
-                    band_key,
-                    meta,
-                )
             except LocalIngestError as exc:
-                skipped.append(discovered_band.path.name)
-                warnings.append(
-                    IngestionWarning(
-                        code="sentinel_swir_not_aligned",
-                        title=f"{band_key} no alineada (20 m)",
-                        description=(
-                            f"Se detectó {band_key} pero no coincide con la grilla "
-                            f"de 10 m (CRS/tamaño/transform). No se registra en esta "
-                            f"fase (sin resampling 20 m → 10 m). NBR/NDMI quedan "
-                            f"deshabilitados para esta banda. Detalle: {exc.message}"
-                        ),
-                        items=[discovered_band.path.name],
-                        severity="warning",
-                    )
+                raise LocalIngestError(
+                    f"Cannot read optional Sentinel-2 band {band_key}: {exc.message}"
+                ) from exc
+
+            try:
+                self._assert_aligned(ref_key, ref_meta, band_key, meta)
+            except LocalIngestError:
+                detected_20m.append(discovered_band.path.name)
+                aligned = self._align_sentinel_swir_band(
+                    band_key=band_key,
+                    discovered_band=discovered_band,
+                    ref_key=ref_key,
+                    ref_meta=ref_meta,
+                    scene_id=scene_id,
                 )
+                discovered[band_key] = aligned.discovered
+                accepted[band_key] = aligned.meta
+                resampled_items.append(aligned.discovered.relative_asset_path)
                 continue
+
             accepted[band_key] = meta
 
-        if skipped:
+        if detected_20m:
             warnings.append(
                 IngestionWarning(
-                    code="sentinel_swir_skipped",
-                    title="SWIR Sentinel-2 omitidas",
+                    code="sentinel_swir_20m_detected",
+                    title="B11/B12 a 20 m detectadas",
                     description=(
-                        "B11/B12 a 20 m no se usan hasta resolver resampling. "
-                        "Índices NBR/NDMI no están compatibles con esta escena."
+                        "Se detectaron bandas SWIR Sentinel-2 a resolución nativa "
+                        "distinta de la grilla de 10 m. Se aplicará resampling "
+                        "bilinear a la grilla de referencia."
                     ),
-                    items=skipped,
-                    severity="warning",
+                    items=detected_20m,
+                    severity="info",
                 )
             )
+
+        if resampled_items:
+            warnings.append(
+                IngestionWarning(
+                    code="sentinel_swir_resampled",
+                    title="Resampling SWIR 20 m → 10 m aplicado",
+                    description=(
+                        f"B11/B12 se alinearon a la grilla de 10 m usando "
+                        f"{ref_key} como referencia (bilinear). Los archivos "
+                        f"originales no se modifican ni se eliminan. NBR/NDMI y "
+                        f"composiciones SWIR quedan habilitados cuando ambas "
+                        f"bandas están disponibles."
+                    ),
+                    items=resampled_items,
+                    severity="info",
+                )
+            )
+
         return accepted
+
+    def _align_sentinel_swir_band(
+        self,
+        *,
+        band_key: str,
+        discovered_band: _DiscoveredBand,
+        ref_key: str,
+        ref_meta: RasterMetadata,
+        scene_id: UUID,
+    ) -> _AlignedSwir:
+        """Resample one SWIR band onto the 10 m reference grid and update discovery."""
+        dest_rel = self._storage.build_aligned_band_asset_path(
+            scene_id, f"{band_key}_10m.tif"
+        )
+        try:
+            result = self._alignment.align_to_reference(
+                source_asset_path=discovered_band.relative_asset_path,
+                destination_asset_path=dest_rel,
+                reference_crs=ref_meta.crs,
+                reference_transform=ref_meta.transform or [],
+                reference_width=int(ref_meta.width or 0),
+                reference_height=int(ref_meta.height or 0),
+                original_band_key=band_key,
+                aligned_band_key=band_key,
+                reference_band=ref_key,
+            )
+        except BandAlignmentError as exc:
+            raise LocalIngestError(
+                f"Failed to resample Sentinel-2 {band_key} to 10 m grid "
+                f"(reference {ref_key}): {exc.message}"
+            ) from exc
+
+        alignment_meta = result.as_metadata()
+        alignment_meta["original_asset_path"] = discovered_band.relative_asset_path
+
+        aligned_discovered = _DiscoveredBand(
+            band_key=band_key,
+            path=result.absolute_path,
+            relative_asset_path=result.relative_asset_path,
+            alignment_meta=alignment_meta,
+        )
+        try:
+            aligned_meta = self._read_single_band_meta(band_key, aligned_discovered)
+            self._assert_aligned(ref_key, ref_meta, band_key, aligned_meta)
+        except LocalIngestError as exc:
+            raise LocalIngestError(
+                f"Aligned {band_key} failed grid validation against {ref_key}: "
+                f"{exc.message}"
+            ) from exc
+
+        return _AlignedSwir(discovered=aligned_discovered, meta=aligned_meta)
 
     def _resolve_acquisition_date(
         self,
@@ -996,6 +1111,7 @@ class LocalSceneIngestService:
             crs=meta.crs,
             dtype=meta.dtype,
             nodata=nodata,
+            metadata=discovered.alignment_meta,
         )
 
     def _band_create(
@@ -1033,6 +1149,9 @@ class LocalSceneIngestService:
             band_meta["oli_band"] = native_band
         else:
             band_meta["msi_band"] = native_band
+
+        if discovered.alignment_meta:
+            band_meta.update(discovered.alignment_meta)
 
         return BandCreate(
             band_key=band_key,
@@ -1079,6 +1198,7 @@ __all__ = [
     "LANDSAT_8_REQUIRED_BANDS",
     "SENTINEL_2_REQUIRED_BANDS",
     "SENTINEL_2_OPTIONAL_BANDS",
+    "SENTINEL_2_ALIGNMENT_REF_BAND",
     "SUPPORTED_INGEST_SENSORS",
     "UPLOAD_ALLOWED_SUFFIXES",
 ]

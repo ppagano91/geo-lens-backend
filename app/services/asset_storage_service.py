@@ -192,6 +192,28 @@ class AssetStorageService:
 
         return f"{DERIVED_SCENES_PREFIX}/{scene_id}/aois/{aoi}/rgb/{key}.{ext}"
 
+    def build_aligned_band_asset_path(
+        self,
+        scene_id: UUID | str,
+        band_filename: str,
+    ) -> str:
+        """Build a relative path for a resampled/aligned band under DATA_ROOT.
+
+        Convention: ``derived/scenes/{scene_id}/aligned/{band_filename}``
+
+        Typical filenames: ``B11_10m.tif``, ``B12_10m.tif``.
+        """
+        sid = str(scene_id or "").strip()
+        if not sid:
+            raise AssetStorageError("scene_id is empty")
+
+        name = (band_filename or "").strip().replace("\\", "/")
+        if not name or "/" in name or name in (".", ".."):
+            raise AssetStorageError(
+                f"Invalid aligned band filename: {band_filename!r}"
+            )
+        return f"{DERIVED_SCENES_PREFIX}/{sid}/aligned/{name}"
+
     def build_uploaded_scene_dir(self, scene_slug: UUID | str) -> str:
         """Build a relative directory for a UI-uploaded scene under DATA_ROOT.
 

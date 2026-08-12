@@ -11,6 +11,8 @@ from app.schemas.band import BandCreate, BandRead
 
 
 class SceneCreate(BaseModel):
+    # Optional pre-allocated id (e.g. Fase 9L aligned assets written before insert).
+    id: Optional[UUID] = None
     name: str = Field(..., min_length=1, max_length=255)
     source: str = Field(..., min_length=1, max_length=100)
     acquisition_date: date

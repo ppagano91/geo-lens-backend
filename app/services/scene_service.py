@@ -32,15 +32,18 @@ class SceneService:
     def create(self, payload: SceneCreate) -> SceneRead:
         self._validate_unique_band_keys(payload.bands)
         polygon = validate_polygon_geojson(payload.footprint)
-        scene = RasterScene(
-            name=payload.name,
-            source=payload.source,
-            acquisition_date=payload.acquisition_date,
-            cloud_cover=payload.cloud_cover,
-            footprint=polygon_to_db_element(polygon),
-            metadata_=payload.metadata,
-            bands=[self._band_from_create(band) for band in payload.bands],
-        )
+        scene_kwargs: dict = {
+            "name": payload.name,
+            "source": payload.source,
+            "acquisition_date": payload.acquisition_date,
+            "cloud_cover": payload.cloud_cover,
+            "footprint": polygon_to_db_element(polygon),
+            "metadata_": payload.metadata,
+            "bands": [self._band_from_create(band) for band in payload.bands],
+        }
+        if payload.id is not None:
+            scene_kwargs["id"] = payload.id
+        scene = RasterScene(**scene_kwargs)
         created = self.repository.create(scene)
         return self._to_read(created)
 

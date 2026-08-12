@@ -46,6 +46,8 @@ class IngestedBandInfo(BaseModel):
     crs: Optional[str] = None
     dtype: Optional[str] = None
     nodata: Optional[str] = None
+    # Optional band metadata (e.g. Fase 9L alignment / resampling flags).
+    metadata: Optional[dict[str, Any]] = None
 
 
 class AvailableIndexInfo(BaseModel):

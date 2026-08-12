@@ -53,7 +53,8 @@ def ingest_local_scene(
     * Landsat 8 Collection 2 L2 Surface Reflectance (``SR_B2``…``SR_B7``);
       optional ``MTL.txt`` enriches metadata.
     * Sentinel-2 L2A / simplified local set at 10 m (``B02``, ``B03``, ``B04``,
-      ``B08``). Optional ``B11``/``B12`` only if already aligned to the 10 m grid.
+      ``B08``). Optional ``B11``/``B12`` (typically 20 m) are resampled/aligned
+      onto the 10 m grid when needed (Fase 9L).
 
     Dev/admin mode: folder must already exist under storage.
     """

@@ -140,6 +140,22 @@ def test_build_derived_aoi_rgb_asset_path() -> None:
         storage.build_derived_aoi_rgb_asset_path(scene_id, "  ", "true_color", "png")
 
 
+def test_build_aligned_band_asset_path() -> None:
+    scene_id = uuid4()
+    storage = AssetStorageService(".")
+
+    assert (
+        storage.build_aligned_band_asset_path(scene_id, "B11_10m.tif")
+        == f"derived/scenes/{scene_id}/aligned/B11_10m.tif"
+    )
+    assert (
+        storage.build_aligned_band_asset_path(scene_id, "B12_10m.tif")
+        == f"derived/scenes/{scene_id}/aligned/B12_10m.tif"
+    )
+    with pytest.raises(AssetStorageError, match="filename"):
+        storage.build_aligned_band_asset_path(scene_id, "../B11.tif")
+
+
 def test_build_uploaded_scene_dir() -> None:
     scene_slug = uuid4()
     storage = AssetStorageService(".")
