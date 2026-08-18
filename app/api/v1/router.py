@@ -7,6 +7,7 @@ from app.api.v1.endpoints import (
     health,
     indices,
     ingest,
+    map_providers,
     raster_bands,
     scenes,
     spatial_coverage,
@@ -34,3 +35,8 @@ api_router.include_router(
     tags=["raster-bands"],
 )
 api_router.include_router(dems.router, prefix="/dems", tags=["dems"])
+api_router.include_router(
+    map_providers.router,
+    prefix="/map-providers",
+    tags=["map-providers"],
+)

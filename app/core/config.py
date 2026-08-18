@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     data_root: str = "../data"
     # Max size per uploaded file for POST /ingest/upload-scene (0 = unlimited).
     max_upload_file_bytes: int = 536_870_912  # 512 MiB
+    # Optional MapTiler key for GET /map-providers/config (never stored in DB).
+    maptiler_api_key: str | None = None
 
     @field_validator("cors_origins", mode="before")
     @classmethod
@@ -28,6 +30,14 @@ class Settings(BaseSettings):
         if value is None:
             return "http://localhost:5173"
         return str(value)
+
+    @field_validator("maptiler_api_key", mode="before")
+    @classmethod
+    def empty_maptiler_key_to_none(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
 
     @property
     def cors_origins_list(self) -> list[str]:
