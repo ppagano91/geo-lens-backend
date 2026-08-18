@@ -24,6 +24,8 @@ from app.core.config import settings
 DERIVED_SCENES_PREFIX = "derived/scenes"
 # Layout for scenes uploaded via UI (Fase 9D).
 UPLOADED_SCENES_PREFIX = "uploaded/scenes"
+# Layout for experimental DEM assets (v0.1-P5).
+UPLOADED_DEMS_PREFIX = "uploaded/dems"
 
 
 class AssetStorageError(Exception):
@@ -224,10 +226,36 @@ class AssetStorageService:
             raise AssetStorageError("scene_slug is empty")
         return f"{UPLOADED_SCENES_PREFIX}/{slug}"
 
+    def build_uploaded_dem_dir(self, dem_id: UUID | str) -> str:
+        """Build a relative directory for an uploaded DEM under DATA_ROOT.
+
+        Convention: ``uploaded/dems/{dem_id}/``
+        """
+        did = str(dem_id or "").strip()
+        if not did:
+            raise AssetStorageError("dem_id is empty")
+        return f"{UPLOADED_DEMS_PREFIX}/{did}"
+
+    def build_uploaded_dem_asset_path(
+        self,
+        dem_id: UUID | str,
+        filename: str,
+    ) -> str:
+        """Build a relative path for a DEM file under DATA_ROOT.
+
+        Typical filenames: ``dem.tif``, ``hillshade.png``.
+        """
+        directory = self.build_uploaded_dem_dir(dem_id)
+        name = (filename or "").strip().replace("\\", "/")
+        if not name or "/" in name or name in (".", ".."):
+            raise AssetStorageError(f"Invalid DEM filename: {filename!r}")
+        return f"{directory}/{name}"
+
 
 __all__ = [
     "AssetStorageError",
     "AssetStorageService",
     "DERIVED_SCENES_PREFIX",
+    "UPLOADED_DEMS_PREFIX",
     "UPLOADED_SCENES_PREFIX",
 ]

@@ -168,6 +168,25 @@ def test_build_uploaded_scene_dir() -> None:
         storage.build_uploaded_scene_dir("  ")
 
 
+def test_build_uploaded_dem_asset_path() -> None:
+    dem_id = uuid4()
+    storage = AssetStorageService(".")
+
+    assert storage.build_uploaded_dem_dir(dem_id) == f"uploaded/dems/{dem_id}"
+    assert (
+        storage.build_uploaded_dem_asset_path(dem_id, "dem.tif")
+        == f"uploaded/dems/{dem_id}/dem.tif"
+    )
+    assert (
+        storage.build_uploaded_dem_asset_path(dem_id, "hillshade.png")
+        == f"uploaded/dems/{dem_id}/hillshade.png"
+    )
+    with pytest.raises(AssetStorageError, match="empty"):
+        storage.build_uploaded_dem_dir("  ")
+    with pytest.raises(AssetStorageError, match="filename"):
+        storage.build_uploaded_dem_asset_path(dem_id, "../dem.tif")
+
+
 def test_validate_normalizes_slashes(tmp_path: Path) -> None:
     storage = AssetStorageService(tmp_path)
     assert (

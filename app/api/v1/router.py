@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from app.api.v1.endpoints import (
     aois,
+    dems,
     derived_assets,
     health,
     indices,
@@ -32,3 +33,4 @@ api_router.include_router(
     prefix="/raster-bands",
     tags=["raster-bands"],
 )
+api_router.include_router(dems.router, prefix="/dems", tags=["dems"])
