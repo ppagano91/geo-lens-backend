@@ -102,6 +102,31 @@ RGB_COMPOSITE_REGISTRY: dict[str, RgbCompositeSpec] = {
         display_name="Humedad / vegetación",
         roles={"red": "swir1", "green": "nir", "blue": "red"},
     ),
+    "agriculture": RgbCompositeSpec(
+        key="agriculture",
+        display_name="Agricultura / vegetación",
+        roles={"red": "swir1", "green": "nir", "blue": "blue"},
+    ),
+    "geology": RgbCompositeSpec(
+        key="geology",
+        display_name="Geología / SWIR",
+        roles={"red": "swir2", "green": "swir1", "blue": "blue"},
+    ),
+    "burn_scar": RgbCompositeSpec(
+        key="burn_scar",
+        display_name="Área quemada / burn scar",
+        roles={"red": "swir2", "green": "nir", "blue": "red"},
+    ),
+    "water_land": RgbCompositeSpec(
+        key="water_land",
+        display_name="Agua / tierra",
+        roles={"red": "nir", "green": "green", "blue": "blue"},
+    ),
+    "atmospheric_penetration": RgbCompositeSpec(
+        key="atmospheric_penetration",
+        display_name="SWIR / penetración atmosférica",
+        roles={"red": "swir2", "green": "swir1", "blue": "nir"},
+    ),
 }
 
 

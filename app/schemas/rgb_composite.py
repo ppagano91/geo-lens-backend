@@ -14,6 +14,11 @@ RgbPresetKey = Literal[
     "false_color_vegetation",
     "swir_urban",
     "moisture_vegetation",
+    "agriculture",
+    "geology",
+    "burn_scar",
+    "water_land",
+    "atmospheric_penetration",
 ]
 
 RgbStretchMode = Literal["percentile"]
