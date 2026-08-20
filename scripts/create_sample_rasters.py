@@ -108,7 +108,7 @@ def _write_band(path: Path, data: np.ndarray, *, label: str) -> None:
         dataset.write(data, 1)
         dataset.update_tags(
             DESCRIPTION=label,
-            NOTE="Synthetic GeoChange Analyzer sample — not real Sentinel-2 data",
+            NOTE="Synthetic GeoLens sample — not real Sentinel-2 data",
         )
 
     action = "Overwrote" if existed else "Created"
@@ -196,7 +196,7 @@ def _build_scene_bands() -> dict[str, np.ndarray]:
 
 
 def main() -> int:
-    print("GeoChange Analyzer — sample rasters")
+    print("GeoLens — sample rasters")
     print(f"Output directory: {OUTPUT_DIR}")
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 

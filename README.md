@@ -1,75 +1,30 @@
-# GeoChange Analyzer — Backend
+# GeoLens — Backend
 
-API con FastAPI para GeoChange Analyzer.
+API FastAPI de GeoLens v0.1. Arranque completo, `DATA_ROOT` y flujo demo:
+[README raíz](../README.md).
 
 ## Requisitos
 
 - Python 3.11+
-- PostgreSQL 16+ con extensión PostGIS instalados localmente en Windows
+- PostgreSQL 16+ con PostGIS
 
 ## Instalación
 
 ```powershell
-cd backend
+cd geo-lens-backend
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements-dev.txt
 copy .env.example .env
 ```
 
-## Base de datos (PostgreSQL + PostGIS local)
+Ajustá `DATABASE_URL`, `DATA_ROOT` y (opcional) `MAPTILER_API_KEY` en `.env`.
 
-### 1. Verificar PostgreSQL
-
-```powershell
-pg_isready -h localhost -p 5432
-```
-
-### 2. Crear base `geolens` (si no existe)
+## Migraciones
 
 ```powershell
-psql -U postgres -c "CREATE USER postgres WITH PASSWORD 'password';"
-psql -U postgres -c "CREATE DATABASE geolens OWNER postgres;"
-```
-
-Omita los comandos que fallen porque el usuario o la base ya existen.
-
-### 3. Habilitar PostGIS
-
-```powershell
-psql -U postgres -d geolens -c "CREATE EXTENSION IF NOT EXISTS postgis;"
-```
-
-### 4. Configurar `.env`
-
-Ajuste `DATABASE_URL` en `backend/.env` según sus credenciales locales:
-
-```env
-DATABASE_URL=postgresql+psycopg://user:password@localhost:5432/geolens
-APP_ENV=local
-CORS_ORIGINS=http://localhost:5173
-DATA_ROOT=../data
-```
-
-### 5. Aplicar migraciones
-
-```powershell
-cd backend
-.venv\Scripts\activate
 alembic upgrade head
 ```
-
-Ver detalle en [docs/aoi_persistence.md](../docs/aoi_persistence.md).
-
-### Alternativa: Docker
-
-Desde la raíz del proyecto, si prefiere un contenedor en lugar de PostgreSQL local:
-
-```powershell
-docker compose up -d
-```
-
-Use las mismas credenciales en `DATABASE_URL` (`user:password@localhost:5432/geolens`).
 
 ## Ejecutar
 
@@ -77,39 +32,7 @@ Use las mismas credenciales en `DATABASE_URL` (`user:password@localhost:5432/geo
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-Endpoints principales:
-
-- `GET /api/v1/health` — health check
-- `POST /api/v1/aois` — crear AOI
-- `GET /api/v1/aois` — listar AOIs
-- `GET /api/v1/aois/{aoi_id}` — obtener AOI
-- `DELETE /api/v1/aois/{aoi_id}` — eliminar AOI
-- `POST /api/v1/scenes` — crear escena con bandas (metadata)
-- `GET /api/v1/scenes` — listar escenas
-- `GET /api/v1/scenes/{scene_id}` — detalle de escena con bandas
-- `GET /api/v1/scenes/{scene_id}/bands` — listar bandas de escena
-- `DELETE /api/v1/scenes/{scene_id}` — eliminar escena
-- `GET /api/v1/indices` — listar definiciones de índices espectrales
-- `GET /api/v1/indices/{index_key}` — detalle de índice por key (`ndvi`, `NDVI`, …)
-- `GET /api/v1/spatial-coverage/aoi/{aoi_id}/scene/{scene_id}` — cobertura espacial AOI vs footprint
-- `GET /api/v1/raster-bands/{band_id}/metadata` — metadata del GeoTIFF local de la banda
-- `GET /api/v1/raster-bands/{band_id}/sample-stats` — estadísticas de muestra reducida (banda 1)
-- `POST /api/v1/scenes/{scene_id}/indices/{index_key}/compute` — calcular índice local (`ndvi`, `ndwi`, `nbr`, `ndmi`) y devolver stats JSON
-- `POST /api/v1/scenes/{scene_id}/indices/ndvi/compute` — alias de compatibilidad (Fase 7B)
-
-Ver [docs/scenes_metadata.md](../docs/scenes_metadata.md) para escenas satelitales.
-Ver [docs/spectral_indices.md](../docs/spectral_indices.md) para el catálogo de índices (solo definiciones, sin cálculo).
-Ver [docs/raster_formulas.md](../docs/raster_formulas.md) para fórmulas NumPy puras (Fase 6B; sin lectura de GeoTIFF ni endpoints de cálculo).
-Ver [docs/spatial_coverage.md](../docs/spatial_coverage.md) para cobertura espacial AOI vs escena (Fase 6C; PostGIS, sin raster).
-Ver [docs/raster_reading.md](../docs/raster_reading.md) para lectura local de GeoTIFF (Fase 7A; metadata / sample-stats).
-Ver [docs/local_sample_rasters.md](../docs/local_sample_rasters.md) para generar GeoTIFF de prueba en `data/` (Fase 7A.1).
-Ver [docs/ndvi_compute.md](../docs/ndvi_compute.md) para cálculo local de NDVI (Fase 7B; resumen JSON, sin guardar raster).
-Ver [docs/fase-7b2-resultados.md](../docs/fase-7b2-resultados.md) para validación end-to-end local (Fase 7B.2; rasters → seed SQL → NDVI).
-Ver [docs/index_compute.md](../docs/index_compute.md) para cálculo genérico de índices (Fase 7C; NDVI/NDWI/NBR/NDMI).
-Ver [docs/roadmap.md](../docs/roadmap.md) para el estado de fases.
-Seed SQL: `scripts/seed_synthetic_scene.sql` (escena sintética + AOIs demo).
-
-Documentación interactiva: `http://localhost:8000/docs`
+OpenAPI: `http://localhost:8000/docs` · Health: `GET /api/v1/health`.
 
 ## Tests
 
@@ -117,14 +40,15 @@ Documentación interactiva: `http://localhost:8000/docs`
 pytest
 ```
 
-Los tests de integración de AOIs, escenas e índices requieren PostgreSQL levantado y migraciones aplicadas.
-Los tests de lectura raster generan un GeoTIFF temporal en runtime (no dependen de archivos en `data/`).
+Los tests de integración requieren PostgreSQL + migraciones. Los de raster
+generan GeoTIFF temporales (no usan escenas reales en `data/`).
 
 ## Variables de entorno
 
 | Variable | Descripción |
 |---|---|
-| `DATABASE_URL` | Conexión SQLAlchemy (`postgresql+psycopg://usuario:password@localhost:5432/geochange`) |
-| `APP_ENV` | Entorno de ejecución (`local`) |
-| `CORS_ORIGINS` | Orígenes permitidos para CORS (ej. `http://localhost:5173`) |
-| `DATA_ROOT` | Raíz para resolver `asset_path` relativos (default `../data`) |
+| `DATABASE_URL` | SQLAlchemy (`postgresql+psycopg://…`) |
+| `APP_ENV` | Entorno (`local`) |
+| `CORS_ORIGINS` | Orígenes CORS (`http://localhost:5173`) |
+| `DATA_ROOT` | Raíz de `asset_path` (default `../data`) |
+| `MAPTILER_API_KEY` | Opcional; habilita Terrain RGB en `/map-providers/config` |

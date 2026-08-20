@@ -15,6 +15,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from app.models.scene import RasterScene
 from app.raster.preview import (
     PreviewWriteError,
     render_index_preview_rgba,
@@ -115,9 +116,14 @@ class IndexPreviewService:
 
     def __init__(
         self,
-        db: Session | None = None,
+        db: Session | Path | str | None = None,
         data_root: Path | str | None = None,
     ) -> None:
+        # Tests and scripts still call IndexPreviewService(data_root).
+        # Endpoints pass a Session as the first argument.
+        if isinstance(db, (str, Path)):
+            data_root = db if data_root is None else data_root
+            db = None
         self._db = db
         self._storage = AssetStorageService(data_root)
 
@@ -151,7 +157,7 @@ class IndexPreviewService:
         )
         resolved = write_preview_png(output_asset, self.data_root, rgba)
 
-        if self._db is not None:
+        if self._db is not None and self._db.get(RasterScene, scene_id) is not None:
             DerivedAssetService(self._db).create_or_update_derived_asset(
                 scene_id=scene_id,
                 asset_type="index",
